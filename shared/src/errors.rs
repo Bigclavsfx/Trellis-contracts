@@ -54,6 +54,8 @@ pub enum Error {
     NotPendingOwner = 39,
     /// An ownership transfer is already pending.
     TransferAlreadyPending = 40,
+    /// An external dependency is degraded or unavailable and safe fallback behavior was triggered or required.
+    DependencyDegraded = 41,
     /// The proposal was not found.
     ProposalNotFound = 12,
     /// The caller has already approved this proposal.

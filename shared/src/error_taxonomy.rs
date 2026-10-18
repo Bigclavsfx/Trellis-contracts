@@ -253,6 +253,13 @@ fn shared_definition(code: u32) -> Option<Definition> {
             "This record format is not supported by the current service version.",
             Some("Contact a maintainer before retrying this operation."),
         ),
+        x if x == E::DependencyDegraded as u32 => definition(
+            "DEPENDENCY_DEGRADED",
+            ErrorCategory::Settlement,
+            true,
+            "An external dependency is degraded or unavailable. Safe fallback behavior has been engaged.",
+            Some("Verify dependency status or retry once external services recover."),
+        ),
         x if x == E::NotPaused as u32
             || x == E::NoChangeDetected as u32 =>
         {

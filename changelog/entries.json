@@ -151,5 +151,14 @@
     "migration_notes": "",
     "issue": 300,
     "pr": null
+  },
+  {
+    "version": "unreleased",
+    "date": "2026-10-18",
+    "impact": "compatible",
+    "summary": "Added external dependency degradation matrix with failure modes, tiered degradation levels, user-safe fallback strategies, automated verification checks, and recovery receipts in shared::degradation (Issue #231).",
+    "migration_notes": "",
+    "issue": 231,
+    "pr": null
   }
 ]

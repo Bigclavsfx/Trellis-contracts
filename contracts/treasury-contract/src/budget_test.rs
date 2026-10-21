@@ -668,3 +668,100 @@ fn worst_case_withdrawal_is_measured_through_the_quota_branch() {
         WITHDRAW_COMMON.cpu_instructions
     );
 }
+
+// ===========================================================================
+// Scaling and retry guards (issue #334)
+// ===========================================================================
+//
+// The `LIMITS` table above fails only when a measurement exceeds a recorded
+// number, so it cannot catch a path that becomes disproportionately expensive
+// while the table is stale. These guards compare two measurements taken in the
+// same run. They need no recorded threshold, so they stay meaningful while the
+// table is being refreshed, and they are not affected by a `soroban-sdk` bump.
+
+/// The heaviest accepted withdrawal must cost at most twice the common one.
+///
+/// The recorded table puts the worst case at about 1.25× the common path, so
+/// two times leaves room for a real change while still failing on a path that
+/// stops scaling with its inputs.
+#[test]
+fn withdraw_worst_case_stays_within_twice_the_common_cost() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, token) = setup(&env);
+    let category = symbol_short!("reserve");
+    let recipient = Address::generate(&env);
+    client.deposit(&admin, &token, &category, &(LIMIT * 2));
+
+    let (common_result, common) = measure(&env, || {
+        client.try_withdraw(&admin, &token, &recipient, &200, &category)
+    });
+    configure_withdraw_quota(&client, &admin, &env);
+    let (worst_result, worst) = measure(&env, || {
+        client.try_withdraw(&admin, &token, &recipient, &LIMIT, &category)
+    });
+
+    assert!(common_result.is_ok(), "the common withdrawal must succeed");
+    assert!(
+        worst_result.is_ok(),
+        "the limit-sized withdrawal must succeed"
+    );
+    assert!(
+        worst.cpu_instructions <= common.cpu_instructions * 2
+            && worst.memory_bytes <= common.memory_bytes * 2,
+        "the worst-case withdrawal ({} CPU / {} bytes) costs more than twice the \
+         common path ({} CPU / {} bytes); a step now scales worse than its input",
+        worst.cpu_instructions,
+        worst.memory_bytes,
+        common.cpu_instructions,
+        common.memory_bytes,
+    );
+}
+
+/// A retried rejection must not cost more than the first attempt. A rejection
+/// writes nothing, so a repeat that costs more means state is accumulating
+/// across failed calls.
+#[test]
+fn rejected_withdrawal_retry_costs_no_more_than_the_first_attempt() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, token) = setup(&env);
+    let category = symbol_short!("reserve");
+    let recipient = Address::generate(&env);
+    client.deposit(&admin, &token, &category, &(LIMIT + 10));
+
+    let (first_result, first) = measure(&env, || {
+        client.try_withdraw(&admin, &token, &recipient, &(LIMIT + 1), &category)
+    });
+    let (retry_result, retry) = measure(&env, || {
+        client.try_withdraw(&admin, &token, &recipient, &(LIMIT + 1), &category)
+    });
+
+    assert_eq!(
+        first_result,
+        Err(Ok(shared::errors::Error::WithdrawalLimitExceeded)),
+        "the first over-limit attempt must be rejected"
+    );
+    assert_eq!(
+        retry_result,
+        Err(Ok(shared::errors::Error::WithdrawalLimitExceeded)),
+        "the retried over-limit attempt must be rejected the same way"
+    );
+    assert_eq!(
+        client.category_balance(&token, &category),
+        LIMIT + 10,
+        "repeated rejections must not touch the balance"
+    );
+    assert!(
+        retry.cpu_instructions <= first.cpu_instructions
+            && retry.memory_bytes <= first.memory_bytes,
+        "a retried rejection ({} CPU / {} bytes) costs more than the first attempt \
+         ({} CPU / {} bytes); a failed call is leaving state behind",
+        retry.cpu_instructions,
+        retry.memory_bytes,
+        first.cpu_instructions,
+        first.memory_bytes,
+    );
+}

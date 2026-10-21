@@ -35,6 +35,7 @@ local `#[contracterror]` enum, and `shared::batch::BatchError`.
 | `Shared` / `Error` | `950-952` | Aid compatibility errors retained in the shared enum. |
 | `Shared` / `Error` | `1000-1008` | Marketplace compatibility aliases retained in the shared enum. |
 | `Marketplace` / `MarketError` | `2000-2023` | Marketplace-local errors. |
+| `Snapshot` / `SnapshotError` | `1100-1106` | Signed state snapshot export errors (`shared::snapshot`). |
 
 `ErrorDomain` disambiguates overlapping or legacy numeric spaces. `describe_error`
 maps supported domain/code pairs to a stable public string, category,

@@ -2,13 +2,17 @@
 
 extern crate std;
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Env, Symbol};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, symbol_short, testutils::Ledger as _, Env, Symbol,
+};
 
+use crate::errors::Error;
 use crate::storage::{
     instance_get, instance_has, instance_remove, instance_set, is_paused, persistent_get,
-    persistent_has, persistent_read, persistent_remove, persistent_set, set_paused, temporary_get,
-    temporary_has, temporary_remove, temporary_set, PERSISTENT_BUMP_AMOUNT,
-    PERSISTENT_TTL_THRESHOLD, TEMPORARY_BUMP_AMOUNT, TEMPORARY_TTL_THRESHOLD,
+    persistent_get_required, persistent_has, persistent_read, persistent_remove, persistent_set,
+    set_paused, temporary_get, temporary_has, temporary_remove, temporary_set,
+    PERSISTENT_BUMP_AMOUNT, PERSISTENT_TTL_THRESHOLD, TEMPORARY_BUMP_AMOUNT,
+    TEMPORARY_TTL_THRESHOLD,
 };
 
 #[contract]
@@ -388,5 +392,91 @@ fn persistent_read_loop_avoids_ttl_overhead() {
             let val = persistent_read::<TestKey, u32>(&env, &key);
             assert_eq!(val, Some(i));
         }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Required reads: missing and archived records fail closed (Issue #336)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn persistent_get_required_returns_a_present_value() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, DummyContract);
+
+    env.as_contract(&contract_id, || {
+        let key = TestKey::U32(400);
+        persistent_set(&env, &key, &9_u32);
+
+        assert_eq!(
+            persistent_get_required::<TestKey, u32>(&env, &key),
+            Ok(9_u32)
+        );
+    });
+}
+
+#[test]
+fn persistent_get_required_refuses_a_key_that_was_never_written() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, DummyContract);
+
+    env.as_contract(&contract_id, || {
+        // Absence must not become a default value. The caller gets an error it
+        // can act on, not a zero it might spend.
+        assert_eq!(
+            persistent_get_required::<TestKey, i128>(&env, &TestKey::U32(401)),
+            Err(Error::NotFound)
+        );
+    });
+}
+
+#[test]
+fn persistent_get_required_refuses_an_archived_record() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, DummyContract);
+    let key = TestKey::U32(402);
+
+    env.as_contract(&contract_id, || {
+        persistent_set(&env, &key, &5_u32);
+    });
+
+    // Move past the entry's live_until. The host then treats it as archived,
+    // which reads the same as a missing key.
+    let archived_at = env.ledger().sequence() + PERSISTENT_BUMP_AMOUNT + 1;
+    env.ledger().set_sequence_number(archived_at);
+
+    env.as_contract(&contract_id, || {
+        assert_eq!(
+            persistent_get_required::<TestKey, u32>(&env, &key),
+            Err(Error::NotFound)
+        );
+    });
+}
+
+#[test]
+fn archived_record_reads_again_once_it_is_restored() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, DummyContract);
+    let key = TestKey::U32(403);
+
+    env.as_contract(&contract_id, || {
+        persistent_set(&env, &key, &5_u32);
+    });
+    let archived_at = env.ledger().sequence() + PERSISTENT_BUMP_AMOUNT + 1;
+    env.ledger().set_sequence_number(archived_at);
+
+    env.as_contract(&contract_id, || {
+        assert_eq!(
+            persistent_get_required::<TestKey, u32>(&env, &key),
+            Err(Error::NotFound)
+        );
+
+        // Recovery: the record is written back with a fresh TTL, then the
+        // retried read succeeds without a default ever being used.
+        persistent_set(&env, &key, &5_u32);
+        assert_eq!(
+            persistent_get_required::<TestKey, u32>(&env, &key),
+            Ok(5_u32)
+        );
     });
 }

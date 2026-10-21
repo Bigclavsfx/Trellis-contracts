@@ -524,6 +524,43 @@ pub fn verify_smoke_test_readiness(
     ))
 }
 
+/// An address a deployment must have initialized before its smoke tests pass (Issue #331).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InitializedAddress {
+    /// Human-readable label for triage, e.g. `aid.treasury`.
+    pub label: Symbol,
+    /// The address read back from the deployed contract. `None` means it was never set.
+    pub address: Option<Address>,
+}
+
+/// Verifies that every initialized address a deployment wires up resolved to a value.
+///
+/// Smoke tests must cover **all** initialized addresses, so one unset entry fails the
+/// gate. An empty list also fails: a gate that verified nothing has not passed.
+pub fn verify_initialized_addresses(
+    module: ReleaseModule,
+    entries: &Vec<InitializedAddress>,
+    timestamp: u64,
+) -> Result<GateCheck, ReleaseGateError> {
+    if entries.is_empty() {
+        return Err(ReleaseGateError::MissingSmokeTest);
+    }
+    for entry in entries.iter() {
+        if entry.address.is_none() {
+            return Err(ReleaseGateError::MissingSmokeTest);
+        }
+    }
+    Ok(create_gate_check(
+        symbol_short!("init_ver"),
+        GateKind::SmokeTest,
+        module,
+        GateCheckStatus::Passed,
+        symbol_short!("init_ok"),
+        timestamp,
+    ))
+}
+
 /// Validates rollback readiness: verifies pre-upgrade snapshot and successful rehearsal receipt.
 pub fn verify_rollback_readiness(
     module: ReleaseModule,

@@ -213,6 +213,112 @@ pub fn dry_run(plan: &MigrationPlan) -> DryRunReport {
 }
 
 // ---------------------------------------------------------------------------
+// Cross-contract dry run (Issue #332)
+// ---------------------------------------------------------------------------
+
+/// One contract's plan within a cross-contract migration.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractMigrationPlan {
+    /// Contract the plan applies to, e.g. `aid`. Must be unique within a batch.
+    pub contract: Symbol,
+    /// The contract's own migration plan.
+    pub plan: MigrationPlan,
+}
+
+/// Dry-run result for one contract within a cross-contract migration.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractDryRun {
+    /// Contract the report describes.
+    pub contract: Symbol,
+    /// The single-plan dry-run report for this contract.
+    pub report: DryRunReport,
+}
+
+/// Impact report for a migration that spans several contracts.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CrossContractDryRunReport {
+    /// Number of contract plans supplied.
+    pub contract_count: u32,
+    /// `true` when the batch is non-empty and every plan is valid and unique.
+    pub batch_valid: bool,
+    /// Records touched across the valid plans (saturating).
+    pub affected_records: u32,
+    /// Destructive steps across the valid plans (saturating).
+    pub destructive_steps: u32,
+    /// `true` when any contract in the batch needs approval before running.
+    pub requires_approval: bool,
+    /// First contract whose plan is invalid or duplicated, for triage.
+    pub first_invalid: Option<Symbol>,
+    /// Per-contract detail, in the order the plans were supplied.
+    pub per_contract: Vec<ContractDryRun>,
+}
+
+/// Preview a migration across several contracts **before any write happens**.
+///
+/// Each plan is dry-run on its own. A contract that appears more than once is
+/// reported as an [`MigrationError::InvalidPlan`] duplicate, so one contract's
+/// migration cannot be staged twice in the same batch. An empty batch is never
+/// valid. This is a pure function and reads or writes no storage.
+pub fn dry_run_cross_contract(
+    env: &Env,
+    plans: &Vec<ContractMigrationPlan>,
+) -> CrossContractDryRunReport {
+    let mut per_contract: Vec<ContractDryRun> = Vec::new(env);
+    let mut seen: Vec<Symbol> = Vec::new(env);
+    let mut batch_valid = !plans.is_empty();
+    let mut affected_records: u32 = 0;
+    let mut destructive_steps: u32 = 0;
+    let mut requires_approval = false;
+    let mut first_invalid: Option<Symbol> = None;
+
+    for entry in plans.iter() {
+        let is_duplicate = seen.iter().any(|s| s == entry.contract);
+        let report = if is_duplicate {
+            DryRunReport {
+                plan_valid: false,
+                error_code: MigrationError::InvalidPlan as u32,
+                step_count: entry.plan.steps.len(),
+                affected_records: 0,
+                destructive_steps: 0,
+                requires_approval: true,
+            }
+        } else {
+            dry_run(&entry.plan)
+        };
+
+        if report.plan_valid {
+            affected_records = affected_records.saturating_add(report.affected_records);
+            destructive_steps = destructive_steps.saturating_add(report.destructive_steps);
+        } else {
+            batch_valid = false;
+            if first_invalid.is_none() {
+                first_invalid = Some(entry.contract.clone());
+            }
+        }
+        requires_approval = requires_approval || report.requires_approval;
+
+        seen.push_back(entry.contract.clone());
+        per_contract.push_back(ContractDryRun {
+            contract: entry.contract.clone(),
+            report,
+        });
+    }
+
+    CrossContractDryRunReport {
+        contract_count: plans.len(),
+        batch_valid,
+        affected_records,
+        destructive_steps,
+        requires_approval,
+        first_invalid,
+        per_contract,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Post checks
 // ---------------------------------------------------------------------------
 

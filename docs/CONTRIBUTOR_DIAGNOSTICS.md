@@ -10,6 +10,13 @@ The **Contributor Diagnostics Suite** provides end-to-end automated verification
 
 ---
 
+## 1.1 Failure, retry, and authorization semantics
+
+The diagnostics runner is read-only and should be safe to rerun after any local setup change. A failed probe records the check name and remediation text, then continues collecting the remaining checks so one missing tool does not hide unrelated failures. Retry a failed check only after applying its printed remediation; transient RPC failures can be rerun without changing contract state.
+
+Diagnostics must never print secret values. Presence checks may report that a credential is missing, but authentication failures should be summarized as an authorization failure rather than exposing tokens, private keys, request headers, or raw provider responses. Release and deployment commands remain separate from this contributor-only diagnostic path.
+
+For release evidence, preserve the machine-readable `--json` output together with the migration and rollback records. A failed release gate is retried by rerunning the corresponding read-only check after remediation; it is not bypassed by lowering a threshold or mutating a deployment.
 ## 2. Diagnostic Categories
 
 The diagnostics harness checks five core categories:

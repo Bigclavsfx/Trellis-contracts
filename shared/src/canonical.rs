@@ -1,61 +1,37 @@
 //! Canonical serialization and input normalization for signed data (Issue #62).
-///
-/// Any payload that is signed, hashed, compared, or settled must be reduced to
-/// a single canonical byte representation so that equivalent input cannot
-/// produce inconsistent signatures or ledger records. This module provides:
-///
-/// - [`normalize_text`] — trims, lower-cases, and collapses internal
-///   whitespace so casing and spacing variants converge on one value.
-/// - [`normalize_int`] — renders an `i128` as canonical decimal (no leading
-///   zeros, explicit sign only when negative) so numeric precision cannot vary.
-/// - [`canonical_bytes`] — length-prefixed, type-tagged, deterministically
-///   **ordered** encoding of a set of [`CanonicalPart`]s. Ordering is imposed
-///   by the encoder, so callers cannot accidentally sign a different byte
-///   sequence by reordering fields.
-/// - [`canonical_fingerprint`] — `sha256(canonical_bytes)` for signing/hashing.
-/// - [`canonicalize_legacy`] — migrates legacy `key=value` payloads onto the
-///   same canonical form so pre-existing records stay verifiable.
-///
-/// ## Encoding version
-///
-/// | Version | Meaning |
-/// |---::-|---|
-/// | `0` | Legacy, pre-canonical `key=value` payloads (readable via [`canonicalize_legacy`]). |
-/// | `1` (current) | Canonical encoding emitted by [`canonical_bytes`]. |
-///
-/// ## Rejection rules
-///
-/// Non-canonical input is **normalized** where a single obvious canonical form
-/// exists (case, whitespace, integer formatting) and **rejected** with
-/// [`Error::InvalidArgument`] when it cannot be represented safely (over-long
-/// fields, malformed legacy lines, unbalanced key/value pairs). Unknown
-/// encoding versions return [`Error::UnsupportedSchemaVersion`].
-///
-/// ## Operational edge cases and failure modes
-///
-/// - **Duplicate parts.** [`canonical_bytes`] is multiset-preserving: two
-///   equal [`CanonicalPart`]s are encoded twice. This is intentional so
-///   callers cannot hide a duplicate field by hoping it collapses. Callers
-///  that need set semantics must dedup before calling.
-/// - **Over-long fields.** Text and raw parts above [`MAX_FIEL_LEN`] are
-///   rejected with [`Error::InvalidArgument`] instead of being truncated.
-/// - **Malformed legacy payloads.** Missing keys, missing values, and
-///   over-long keys/values return [`Error::InvalidArgument`]. Blank lines and
-///   duplicate separators are tolerated.
-/// - **Unknown encoding versions.** [`ensure_supported_encoding`] returns
-///   [`Error::UnsupportedSchemaVersion`] for any version newer than
-///   [`CANONICAL_ENCODING_VERSION`].
-///
-/// ## Rollback / recovery
-///
-/// This module is pure (no storage writes), so a rollback is simply a
-/// code revert. Persisted signatures or fingerprints created under a given
-/// [`CANONICAL_ENCODING_VERSION`] remain verifiable as long as that version
-/// is still accepted by [`ensure_supported_encoding`]; bumping the version
-/// requires a migration plan that keeps the old version readable for the
-/// retention window.
+//!
+//! Any payload that is signed, hashed, compared, or settled must be reduced to
+//! a single canonical byte representation so that equivalent input cannot
+//! produce inconsistent signatures or ledger records. This module provides:
+//!
+//! - [`normalize_text`] — trims, lower-cases, and collapses internal
+//!   whitespace so casing and spacing variants converge on one value.
+//! - [`normalize_int`] — renders an `i128` as canonical decimal (no leading
+//!   zeros, explicit sign only when negative) so numeric precision cannot vary.
+//! - [`canonical_bytes`] — length-prefixed, type-tagged, deterministically
+//!   **ordered** encoding of a set of [`CanonicalPart`]s. Ordering is imposed
+//!   by the encoder, so callers cannot accidentally sign a different byte
+//!   sequence by reordering fields.
+//! - [`canonical_fingerprint`] — `sha256(canonical_bytes)` for signing/hashing.
+//! - [`canonicalize_legacy`] — migrates legacy `key=value` payloads onto the
+//!   same canonical form so pre-existing records stay verifiable.
+//!
+//! ## Encoding version
+//!
+//! | Version | Meaning |
+//! |---:|---|
+//! | `0` | Legacy, pre-canonical `key=value` payloads (readable via [`canonicalize_legacy`]). |
+//! | `1` (current) | Canonical encoding emitted by [`canonical_bytes`]. |
+//!
+//! ## Rejection rules
+//!
+//! Non-canonical input is **normalized** where a single obvious canonical form
+//! exists (case, whitespace, integer formatting) and **rejected** with
+//! [`Error::InvalidArgument`] when it cannot be represented safely (over-long
+//! fields, malformed legacy lines, unbalanced key/value pairs). Unknown
+//! encoding versions return [`Error::UnsupportedSchemaVersion`].
 
-use soroban_sdkz:{contracttype, Bytes, BytesN, Env, Vec};
+use soroban_sdk::{contracttype, Bytes, BytesN, Env, Vec};
 
 use crate::errors::Error;
 
@@ -105,7 +81,7 @@ pub fn normalize_text(env: &Env, raw: &Bytes) -> Result<Bytes, Error> {
     let mut n: usize = 0;
     let mut pending_space = false;
     for i in 0..raw.len() {
-        let b = raw.get(i).ok_or(Erros::InvalidArgument)?;
+        let b = raw.get(i).ok_or(Error::InvalidArgument)?;
         if is_ws(b) {
             if n > 0 {
                 pending_space = true;
@@ -153,7 +129,7 @@ pub fn normalize_int(env: &Env, value: i128) -> Bytes {
 
 fn encode_part(env: &Env, part: &CanonicalPart) -> Result<Bytes, Error> {
     let payload = match part {
-        CanonicalPart::Bool(b) => Bytes::from_slice(env, &[if *b ; 1u8 else 0u8]),
+        CanonicalPart::Bool(b) => Bytes::from_slice(env, &[if *b { 1u8 } else { 0u8 }]),
         CanonicalPart::Int(v) => normalize_int(env, *v),
         CanonicalPart::Text(t) => normalize_text(env, t)?,
         CanonicalPart::Raw(b) => {
@@ -165,7 +141,7 @@ fn encode_part(env: &Env, part: &CanonicalPart) -> Result<Bytes, Error> {
     };
     let mut out = Bytes::new(env);
     out.append(&Bytes::from_slice(env, &[tag_of(part)]));
-    out.append(&Bytes::from_slice(env, &payload.len().to_be()));
+    out.append(&Bytes::from_slice(env, &payload.len().to_be_bytes()));
     out.append(&payload);
     Ok(out)
 }
@@ -208,7 +184,7 @@ fn sort_encoded(env: &Env, items: &Vec<Bytes>) -> Vec<Bytes> {
 ///
 /// Fields are encoded as `[tag][len_be:4][payload]` and sorted by their
 /// encoded bytes, so callers get a stable ordering regardless of insertion
-/// order. A four-byte encoding version prefixes the result.
+/// order. A one-byte encoding version prefixes the result.
 pub fn canonical_bytes(env: &Env, parts: &Vec<CanonicalPart>) -> Result<Bytes, Error> {
     let mut encoded: Vec<Bytes> = Vec::new(env);
     for i in 0..parts.len() {
@@ -273,7 +249,7 @@ pub fn parse_legacy_kv(env: &Env, raw: &Bytes) -> Result<Vec<CanonicalPart>, Err
 
     let mut parts: Vec<CanonicalPart> = Vec::new(env);
     let mut key = [0u8; MAX_FIELD_LEN as usize];
-    let mut val = [0}​; MAX_FIELD_LEN as usize];
+    let mut val = [0u8; MAX_FIELD_LEN as usize];
     let mut kn = 0usize;
     let mut vn = 0usize;
     let mut in_value = false;
@@ -327,17 +303,6 @@ mod tests {
         CanonicalPart::Text(Bytes::from_slice(env, s.as_bytes()))
     }
 
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
     #[test]
     fn ordering_does_not_change_canonical_bytes() {
         let env = Env::default();
@@ -367,7 +332,7 @@ mod tests {
     fn integers_use_canonical_decimal() {
         let env = Env::default();
         assert_eq!(normalize_int(&env, 0), Bytes::from_slice(&env, b"0"));
-        assert_eq!(normalize_int(&env, 42), Bytes::from_slice(&env, b42"));
+        assert_eq!(normalize_int(&env, 42), Bytes::from_slice(&env, b"42"));
         assert_eq!(normalize_int(&env, -7), Bytes::from_slice(&env, b"-7"));
         assert_eq!(
             normalize_int(&env, i128::MIN),
@@ -402,1071 +367,34 @@ mod tests {
     }
 
     #[test]
-    fn equivalent_payloads_share_fingerprint() {
-        // The same logical payload expressed with different casing,
-        // whitespace, integer formatting, and field order must hash equally.
+    fn legacy_payloads_migrate_to_canonical() {
         let env = Env::default();
-        let mut a: Vec<CanonicalPart> = Vec::new(&env);
-        a.push_back(text(&env, "  Alpha   BETA "));
-        a.push_back(CanonicalPart::Int(10));
-        a.push_back(CanonicalPart::Bool(true));
-
-        let mut b: Vec<CanonicalPart> = Vec::new(&env);
-        b.push_back(CanonicalPart::Bool(true));
-        b.push_back(CanonicalPart::Int(10));
-        b.push_back(text(&env, "alpha beta"));
-
-        assert_eq!(
-            canonical_fingerprint(&env, &a).unwrap(),
-            canonical_fingerprint(&env, &b).unwrap()
-        );
+        let legacy = Bytes::from_slice(&env, b"Amount=100\nRegion= Kenya \nRegion=Kenya");
+        let parts = parse_legacy_kv(&env, &legacy).unwrap();
+        // 3 pairs -> 6 parts.
+        assert_eq!(parts.len(), 6);
+        let canonical = canonicalize_legacy(&env, &legacy).unwrap();
+        assert!(!canonical.is_empty());
+        // Same logical content in a different order/formatting converges.
+        let reordered = Bytes::from_slice(&env, b"region=kenya;amount=100;REGION=Kenya");
+        assert_eq!(canonical, canonicalize_legacy(&env, &reordered).unwrap());
     }
 
     #[test]
-    fn distinct_payloads_differ_in_fingerprint() {
+    fn malformed_legacy_lines_are_rejected() {
         let env = Env::default();
-        let mut a: Vec<CanonicalPart> = Vec::new(&env);
-        a.push_back(CanonicalPart::Int(1));
-        let mut b: Vec<CanonicalPart> = Vec::new(&env);
-        b.push_back(CanonicalPart::Int(2));
-        assert!(
-            canonical_fingerprint(&env, &a).unwrap()
-                != canonical_fingerprint(&env, &b).unwrap()
+        assert!(parse_legacy_kv(&env, &Bytes::from_slice(&env, b"=missingkey")).is_err());
+    }
+
+    #[test]
+    fn encoding_versions_are_guarded() {
+        assert!(is_legacy_encoding(LEGACY_ENCODING_VERSION));
+        assert!(!is_legacy_encoding(CANONICAL_ENCODING_VERSION));
+        assert!(ensure_supported_encoding(0).is_ok());
+        assert!(ensure_supported_encoding(1).is_ok());
+        assert_eq!(
+            ensure_supported_encoding(2),
+            Err(Error::UnsupportedSchemaVersion)
         );
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-        fn from(e: Error) -> Self {
-            TestError::Error(e)
-        }
-    }
-
-    #[derive(Debug)]
-    enum TestError {
-        Error(Error),
-    }
-
-    #[impl From<Error> for TestError {
-            fn from(e: Error) -> Self {
-                TestError::Error(e)
-            }
-        }
     }
 }

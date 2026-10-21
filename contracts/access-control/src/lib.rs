@@ -22,6 +22,8 @@ use soroban_sdk::{
 };
 
 mod permissions;
+#[cfg(test)]
+mod permission_matrix_test;
 pub use permissions::{
     has_action_permission, policy_for, require_action, Action, ActionPolicy, ActionScope,
 };

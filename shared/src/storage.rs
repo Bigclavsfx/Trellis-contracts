@@ -26,6 +26,8 @@
 
 use soroban_sdk::{symbol_short, Env, IntoVal, Symbol, TryFromVal, Val};
 
+use crate::errors::Error;
+
 // ---------------------------------------------------------------------------
 // TTL constants
 // ---------------------------------------------------------------------------
@@ -107,6 +109,26 @@ where
         );
     }
     value
+}
+
+/// Read a **persistent** record that the contract's own invariants say must
+/// exist, failing closed when it does not.
+///
+/// An absent key is ambiguous. The record was never written, was removed, or
+/// its TTL lapsed and the entry was archived, and the contract cannot tell
+/// these apart. A caller that substitutes a default (a zero balance, an empty
+/// list) can act on the wrong state without any error. Use this helper only
+/// where absence is impossible by invariant. Where absence is a legitimate
+/// state, keep [`persistent_get`] and handle `None` explicitly.
+///
+/// A miss returns [`Error::NotFound`] and does not bump the TTL. A refused read
+/// therefore cannot extend an entry that is about to be restored.
+pub fn persistent_get_required<K, V>(env: &Env, key: &K) -> Result<V, Error>
+where
+    K: IntoVal<Env, Val>,
+    V: TryFromVal<Env, Val>,
+{
+    persistent_get(env, key).ok_or(Error::NotFound)
 }
 
 /// Read a value from **persistent** storage **without** extending TTL.

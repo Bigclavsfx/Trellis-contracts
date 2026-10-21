@@ -199,3 +199,17 @@ node scripts/release-readiness-gate.cjs --module treasury
 # Validate changelog and schema
 node scripts/validate-changelog.cjs
 ```
+
+---
+
+## 9. Initialized Address Coverage (Issue #331)
+
+The smoke-test gate must cover **every** address a deployment initializes (for
+example Aid → Treasury, Treasury → Referral). `shared::release_readiness::verify_initialized_addresses`
+takes one `InitializedAddress` per expected wiring, where `address` is the
+value read back from the deployed contract.
+
+- Any entry whose `address` is `None` fails the gate with `MissingSmokeTest`.
+- An empty list also fails. A gate that verified nothing has not passed.
+- The check is offline and pure. The live read-back is still performed by
+  `scripts/verify-deployment.cjs`, which needs network access.

@@ -3,10 +3,10 @@ use soroban_sdk::{symbol_short, testutils::Address as _, Address, BytesN, Env, S
 use crate::migration::RollbackStrategy;
 use crate::release_readiness::{
     create_gate_check, emergency_bypass_signoff, evaluate_release_readiness, get_readiness_report,
-    get_rehearsal_count, get_rehearsal_receipt, is_release_ready, rehearse_rollback, signoff_release,
-    verify_migration_readiness, verify_rollback_readiness, verify_smoke_test_readiness,
-    GateCheckStatus, GateKind, ReleaseGateError, ReleaseManifest, ReleaseModule,
-    RollbackRehearsalParams,
+    get_rehearsal_count, get_rehearsal_receipt, is_release_ready, rehearse_rollback,
+    signoff_release, verify_initialized_addresses, verify_migration_readiness,
+    verify_rollback_readiness, verify_smoke_test_readiness, GateCheckStatus, GateKind,
+    InitializedAddress, ReleaseGateError, ReleaseManifest, ReleaseModule, RollbackRehearsalParams,
 };
 
 #[test]
@@ -561,3 +561,51 @@ fn test_emergency_dual_bypass_signoff() {
     assert!(res.is_ok());
 }
 
+#[test]
+fn test_initialized_addresses_all_set_passes_smoke_gate() {
+    let env = Env::default();
+    let mut entries = Vec::new(&env);
+    entries.push_back(InitializedAddress {
+        label: Symbol::new(&env, "aid_treasury"),
+        address: Some(Address::generate(&env)),
+    });
+    entries.push_back(InitializedAddress {
+        label: Symbol::new(&env, "treasury_referral"),
+        address: Some(Address::generate(&env)),
+    });
+
+    let check = verify_initialized_addresses(ReleaseModule::Aid, &entries, 1_000).unwrap();
+
+    assert_eq!(check.kind, GateKind::SmokeTest);
+    assert_eq!(check.module, ReleaseModule::Aid);
+    assert_eq!(check.status, GateCheckStatus::Passed);
+    assert_eq!(check.executed_at, 1_000);
+}
+
+#[test]
+fn test_initialized_addresses_one_unset_entry_fails_smoke_gate() {
+    let env = Env::default();
+    let mut entries = Vec::new(&env);
+    entries.push_back(InitializedAddress {
+        label: Symbol::new(&env, "aid_treasury"),
+        address: Some(Address::generate(&env)),
+    });
+    entries.push_back(InitializedAddress {
+        label: Symbol::new(&env, "treasury_referral"),
+        address: None,
+    });
+
+    let result = verify_initialized_addresses(ReleaseModule::Aid, &entries, 1_000);
+
+    assert_eq!(result, Err(ReleaseGateError::MissingSmokeTest));
+}
+
+#[test]
+fn test_initialized_addresses_empty_list_fails_smoke_gate() {
+    let env = Env::default();
+    let entries: Vec<InitializedAddress> = Vec::new(&env);
+
+    let result = verify_initialized_addresses(ReleaseModule::Aid, &entries, 1_000);
+
+    assert_eq!(result, Err(ReleaseGateError::MissingSmokeTest));
+}

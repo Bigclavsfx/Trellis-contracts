@@ -373,6 +373,17 @@ pub fn evaluate_risk(env: &Env, ctx: &ActionContext) -> RiskAssessment {
             });
             total_score += score;
         }
+    } else if profile.last_action_ledger > 0 && ledgers_elapsed >= policy.dormancy_window_ledgers {
+        // 6. Dormancy factor: prolonged inactivity prior to high-impact privileged action
+        let score = 150;
+        factors.push_back(RiskFactor {
+            factor_type: RiskFactorType::UnusualDormancy,
+            score_weight: score,
+            threshold: policy.dormancy_window_ledgers,
+            observed: ledgers_elapsed,
+            explanation: symbol_short!("dormant"),
+        });
+        total_score += score;
     }
 
     // Clamp score to max 1000

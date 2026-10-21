@@ -157,3 +157,31 @@ Pre-migration snapshot: <ledger / backup reference>
 Forward-fix PR:     <link>
 Escalation:         <who / where>
 ```
+
+## Cross-contract dry run (Issue #332)
+
+A migration that spans several contracts (for example Aid and Treasury) should
+be previewed as one batch with `shared::migration::dry_run_cross_contract`.
+It takes one `ContractMigrationPlan` per contract and returns a
+`CrossContractDryRunReport`:
+
+| Field | Meaning |
+|---|---|
+| `batch_valid` | `true` only when the batch is non-empty and every plan is valid and unique |
+| `affected_records` / `destructive_steps` | Totals across the valid plans only (saturating) |
+| `requires_approval` | `true` when any contract in the batch has a destructive step |
+| `first_invalid` | First contract whose plan is invalid or duplicated |
+| `per_contract` | Each contract's own `DryRunReport`, in the order supplied |
+
+Operational edge cases:
+
+- **Duplicate contract in a batch.** The second entry is reported as
+  `InvalidPlan`, and the batch is invalid. This stops one contract's migration
+  from being staged twice.
+- **Empty batch.** Never valid, so a release cannot pass by migrating nothing.
+- **One invalid plan.** The batch is invalid. Totals still count the valid
+  plans so operators can see the blast radius, but `batch_valid` is `false`, so
+  nothing should be staged until the invalid plan is fixed.
+
+The function is pure and reads or writes no storage, so it is safe on a read
+path and in simulations.

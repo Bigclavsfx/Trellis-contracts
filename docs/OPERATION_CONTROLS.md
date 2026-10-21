@@ -15,6 +15,43 @@ Suggested resource symbols:
 | `claim` | Claim/refund settlement |
 | `oracle` | Oracle submissions |
 
+### Risk-Scored Abuse Detection for High-Impact Operations (Issue #242)
+
+For privileged and high-value mutations across Soroban modules (treasury withdrawals, escrow releases/refunds, upgrades, migrations, role elevations, rebalancer executions, and batch invokes), basic counter-based rate limiting is insufficient.
+
+Use `shared::abuse::assess_high_impact_abuse` or `shared::abuse::evaluate_high_impact_abuse` with `HighImpactAbuseContext`:
+
+```rust
+use shared::{
+    assess_high_impact_abuse, HighImpactAbuseContext, HighImpactAction, RiskVerdict,
+};
+
+let ctx = HighImpactAbuseContext {
+    action: HighImpactAction::TreasuryWithdrawal,
+    actor: caller.clone(),
+    resource: symbol_short!("treasury"),
+    amount: withdrawal_amount,
+    max_reference_amount: treasury_pool_balance,
+    recipient_is_known: is_registered_beneficiary(&destination),
+    is_batch: false,
+    batch_size: 1,
+};
+
+// Evaluates multi-factor explainable risk and enforces review/step-up behavior
+let assessment = assess_high_impact_abuse(&env, &ctx)?;
+```
+
+- **Explainable Risk Signals**: Evaluates dimension factors including `ExcessiveAmountRatio`, `VelocitySpike`, `UnrecognizedRecipient`, `UnusualDormancy`, `PriorStrikes`, and `LargeBatchSize`.
+- **Verdict & Step-up Behavior**:
+  - `Allow` (0–399): Legitimate low-risk use proceeds cleanly without penalizing actor with strikes or false-positive rate limit penalties.
+  - `RequireDualAuth` (400–599 / step-up threshold): Elevated risk profile requires dual-admin / co-signer authorization; records light abuse tracking weight (`+10`) and returns `Error::Unauthorized`.
+  - `Throttle` (velocity burst anomaly): Records moderate abuse weight (`+20`) and returns `Error::QuotaExceeded`.
+  - `Block` (>=800 / block threshold): Critical risk triggers block, logs security events, records heavy abuse weight (`+40`), and returns `Error::QuotaExceeded`.
+- **Operational Edge Cases & Recovery**:
+  - **Decay & Recovery**: Accumulated abuse score decays over ledger windows (`decay_per_window` per `window_ledgers`).
+  - **False Positive Remediation**: Authorized admins can call `reset_actor_risk(&env, &admin, &actor)` or grant exemptions via `set_actor_exemption(&env, &admin, &actor, true)`.
+  - **Auditability**: Emits typed event topics (`r_allow`, `r_dual`, `r_throtl`, `r_block`, `r_policy`, `r_exempt`) for transparent indexer and explorer monitoring.
+
 ## Emergency Circuit Breaker
 
 The shared circuit breaker lets an admin pause risky operation families without disabling safe reads or unrelated flows. Scopes are stable symbols defined in `shared::circuit_breaker`:

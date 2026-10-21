@@ -38,3 +38,49 @@ If `./scripts/validate-restore.sh` reports failures, maintainers should interpre
 | **Duplicated Records** | Idempotency or uniqueness constraints have been violated, typically due to duplicated side-effects. | **Halt all trading.** Identify the duplicated side effects. Manual deduplication is required by the **Protocol Engineering Team**. |
 | **Inconsistent Records**| Aggregate values have drifted from the underlying records, possibly due to a logic bug during migration. | Escalate immediately to the **Security and Protocol Engineering Teams**. Do not resume operations until consistency is manually verified and corrected. |
 
+
+## Missing and archived persistent records (Issue #336)
+
+A persistent entry whose TTL lapses is archived. The contract reads it as
+absent, the same as a key that was never written. The contract cannot tell
+these cases apart, so the rule is simple: **never turn absence into a default
+unless the contract's invariants prove the record can be absent.**
+
+`shared::storage::persistent_get_required` enforces this rule. On a miss it
+returns `Error::NotFound` and does not bump the TTL, so a refused read cannot
+extend an entry that is about to be restored. Use `persistent_get` and handle
+`None` explicitly wherever absence is a legitimate state.
+
+| Situation | Caller behaviour | Recovery |
+| --- | --- | --- |
+| Record required by invariant returns `NotFound` | Fail the operation. Do not substitute a default. | Restore the archived entry with the network's restore operation (`RestoreFootprint`), then retry. |
+| Record was never written and absence is legitimate | Handle `None` as the "no record" state. | None needed. |
+| Record is restored and written back with a fresh TTL | The retried `persistent_get_required` returns the value. | None needed. |
+
+Covered by `shared/src/test_storage.rs`: a present value is returned, a
+never-written key and an archived record both return `NotFound`, and a restored
+record reads again.
+
+### Call sites that default absence to zero (review list)
+
+These reads currently return `0` or an empty collection on a miss. If the
+entry was archived, the operation proceeds on the wrong state, with no error.
+Each one needs an explicit review: either absence is legitimate for it, or it
+should move to `persistent_get_required`. This PR does not change them, because
+absence is a legitimate state for some of them and changing them would alter
+contract behaviour.
+
+- `contracts/nft-marketplace/src/storage.rs`: `PendingRefunds::get` returns `0`
+  for a missing `PendingRefund`. A bidder with no refund is legitimate, so
+  absence is ambiguous here.
+- `contracts/oracle-contract/src/storage.rs`: `SubmitterStake` returns `0`.
+- `contracts/aid-contract/src/storage.rs`: `DonorAidCount` returns `0`.
+
+**Operational edge cases.** An archived record that is restored after its
+settlement window has passed may change a result that operators have already
+reported. Compare the restored value with the audit ledger before re-running
+any operation.
+
+**Rollback.** `persistent_get_required` is additive. No existing call site
+changes, so reverting the commit removes the helper and its tests and leaves
+on-chain behaviour unchanged.

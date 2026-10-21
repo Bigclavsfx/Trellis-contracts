@@ -2,7 +2,7 @@
 
 ## 1. Overview & Objectives
 
-In decentralized web3 applications, users frequently encounter complex multi-step transaction lifecycles—wallet connection, input validation, hardware wallet signature prompts, asynchronous ledger broadcasting, and final settlement confirmation.
+In decentralized web3 applications, users frequently encounter complex multi-step transaction lifecycles — wallet connection, input validation, hardware wallet signature prompts, asynchronous ledger broadcasting, and final settlement confirmation.
 
 Without explicit accessibility coverage:
 - Screen readers fail to announce background transaction settlement or sudden execution errors.
@@ -66,10 +66,10 @@ When transactions enter modal verification states (`AwaitingSignature`, `Recover
 ## 4. Keyboard Navigation: Roving Tabindex
 
 For multi-item asset selectors (e.g. NFT marketplace grids, vault selection, token lists):
-- **Single Tab Stop**: The container has one tab stop (<kbd>Tab</kbd> enters, <kbd>Tab</kbd> exits).
-- **Active Item**: The selected item maintains `tabIndex="0"`.
-- **Inactive Items**: All other items maintain `tabIndex="-1"`.
-- **Arrow Navigation**:
+- `Single Tab Stop`: The container has one tab stop (<kbd>Tab</kbd> enters, <kbd>Tab</kbd> exits).
+- `Active Item`: The selected item maintains `tabIndex="0"`.
+- `Inactive Items`: All other items maintain `tabIndex="-1"`.
+- `Arrow Navigation`:
   - <kbd>&rarr;</kbd> / <kbd>&darr;</kbd>: Focus next item.
   - <kbd>&larr;</kbd> / <kbd>&uarr;</kbd>: Focus previous item.
   - <kbd>Home</kbd>: Jump to first item.
@@ -95,3 +95,46 @@ For multi-item asset selectors (e.g. NFT marketplace grids, vault selection, tok
 - Zero storage schema migration required.
 - All accessibility data structures (`shared::accessibility`) are additive helper models.
 - Client applications can consume accessibility metadata without requiring protocol hard forks.
+
+---
+
+## 7. Regression Coverage (Dense Forms, Tables, Error Recovery)
+
+The following tests in `shared/src/test_accessibility.rs` guard the core workflows against regressions:
+
+| Test | Core workflow | What it guards |
+| :--- | :--- | :--- |
+| `test_normal_lifecycle_state_progression` | Normal transaction lifecycle | ARIA live/role/busy mapping for each state |
+| `test_failure_path_uses_assertive_alert` | Fatal error | Assertive announcement + modal trap |
+| `test_retry_path_recoverable_error_to_retry` | Recoverable error -> retry | Dismissable alert -> polite busy state |
+| `test_focus_trap_validation` | Focus trap config | Active traps require focus targets |
+| `test_dense_form_keyboard_reachability_and_focus_order` | Dense forms | Unique controls + stable return focus |
+| `test_dense_table_roving_tabindex_invariants` | Dense tables | Exactly one tab stop + bounded Home/End |
+| `test_error_announcement_regression_guard` | Error announcement | Assertive alert, not busy, trapped |
+| `test_error_recovery_restores_focus_and_announcement` | Error recovery flow | Focus restoration + polite success |
+| `test_reduced_motion_preserves_announcements` | Reduced motion | Announcements survive motion reduction |
+| `test_screen_reader_announcement_coverage` | Screen reader | Non-idle states always announce |
+| `test_focus_trap_rejects_invalid_active_config` | Focus trap rejection | Fail closed on missing focus targets |
+| `test_record_and_retrieve_error_state` | Storage round-trip | Error state survives reload |
+| `test_accessibility_metadata_public_shape` | Backwards compat | Public field set remains constructible |
+| `test_accessibility_error_interface` | Error type stability | Error enum remains debuggable |
+
+## 8. Operational Edge Cases & Failure Modes
+
+| Edge case | Failure mode | Mitigation |
+| :--- | :--- | :--- |
+| Dense form re-renders during validation | Focus jumps to top of form | Contract returns stable `return_focus`; client restores focus on state change |
+| Duplicate control identifiers | Focus order becomes ambiguous | Test asserts unique identifiers in dense forms |
+| Roving tabindex drifts to multiple tab stops | Keyboard users get stuck in table | Test asserts exactly one tab stop per active item |
+| Error announcement suppressed by reduced motion | Silent failure for screen readers | Test asserts announcements survive motion reduction |
+| Active focus trap with missing targets | Focus escapes modal or disappears | `validate_focus_trap_config` returns error; client fails closed |
+| Storage record failure during error state | Announcement lost on reload | Test asserts error state round-trips through record/retrieve |
+| Unknown / future state value | Client cannot map to ARIA | Clients must default to assertive alert and request manual review |
+
+## 9. Rollback & Recovery Procedure
+
+1. **Detect regression**: CI runs `shared/src/test_accessibility.rs`. A red test identifies the affected core workflow.
+2. **Contain impact**: Accessibility metadata is additive; revert the client consumer change or the contract mapping change without a storage migration.
+3. **Restore focus behavior**: Revert to the last known-good contract version; clients restore focus to the stored `return_focus`.
+4. **Verify**: Re-run the full accessibility test suite and manually verify keyboard-only and screen-reader flows before release.
+5. **Communicate**: Note the rollback in the release changelog; no on-chain state is mutated by accessibility metadata.

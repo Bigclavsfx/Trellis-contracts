@@ -157,3 +157,29 @@ No migration, configuration or deployment steps are required. The harness is
 test-only code (`#[cfg(test)]`) in the `shared` library; it is not compiled into
 any contract wasm, adds no runtime dependency, and changes no contract entry
 point.
+
+## Edge-case fixtures (Issue #335)
+
+`shared/src/test_ledger_fixtures.rs` pins the harness at its numeric edges with
+literal expected values. Each row is a fixture, so a failing row names the
+case and can be checked by hand.
+
+| Edge | Behaviour | Recovery / caller guidance |
+| --- | --- | --- |
+| Advance by zero | No-op on sequence and timestamp. | None needed. |
+| Advance past `u32::MAX` | The sequence saturates at `u32::MAX`. The timestamp is re-derived from the sequence, so it stays at the ceiling value (`23_115_831_670`). | Tests that reach the ceiling should assert the saturated sequence, not keep advancing. |
+| Rewind (`at` behind the clock) | Refused with `LedgerControlError::Backwards`; the clock is unchanged. | Fix the test's ordering. A rewind is never a valid way to "repair" a stale stamp. |
+| Same ledger (`at` to the current sequence) | Allowed; not a rewind. | None needed. |
+| `deadline(n)` past the ceiling | Clamps to `u32::MAX`. | A contract that requires `expiry > current` rejects a clamped deadline at the ceiling, which is the intended fail-closed result. |
+| Classify at the deadline / one past it | `NextLedger` at the deadline, `Expired` one past it. | Matches the release rule in the table above. |
+| Classify out of order | `OutOfOrder` takes precedence over `Expired`. | Re-compose the submission against the current ledger. Do not replay it. |
+
+Before this change, `advance` saturated the sequence but kept adding
+`SECONDS_PER_LEDGER` to the timestamp. A clock that overshot the ceiling
+therefore ran ahead of the ledger it reported. The fixture
+`advance_fixtures_keep_the_timestamp_derived_from_the_sequence` fails on the old
+code and passes on the new.
+
+**Rollback:** the fixtures are test-only, and the `advance` change only affects
+test harness time. Reverting the commit restores the old (skewed) behaviour in
+tests and changes nothing on-chain.

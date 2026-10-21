@@ -16,7 +16,7 @@ mod tests {
         let env = Env::default();
         let admin = Address::generate(&env);
         let actor = Address::generate(&env);
-        crate::auth::set_admin(&env, &admin).unwrap();
+        crate::auth::set_admin(&env, &admin);
         (env, admin, actor)
     }
 
@@ -203,4 +203,31 @@ mod tests {
         let err3 = reset_actor_risk(&env, &attacker, &actor);
         assert_eq!(err3.err(), Some(Error::Unauthorized));
     }
+
+    #[test]
+    fn test_dormancy_factor_detected() {
+        let (env, _admin, actor) = setup();
+
+        let ctx = ActionContext {
+            action: HighImpactAction::TreasuryWithdrawal,
+            actor: actor.clone(),
+            amount: 1_000,
+            max_reference_amount: 100_000,
+            recipient_is_known: true,
+            is_batch: false,
+            batch_size: 1,
+            prior_strikes: 0,
+        };
+
+        // First action at ledger 100
+        env.ledger().set_sequence_number(100);
+        assert!(assess_and_record(&env, &ctx).is_ok());
+
+        // Second action after dormancy window (default 17_280 ledgers)
+        env.ledger().set_sequence_number(100 + 20_000);
+        let assessment = evaluate_risk(&env, &ctx);
+        assert!(assessment.total_score >= 150);
+        assert!(assessment.factors.iter().any(|f| f.factor_type == crate::risk_scoring::RiskFactorType::UnusualDormancy));
+    }
 }
+

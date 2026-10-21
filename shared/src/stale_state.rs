@@ -22,6 +22,7 @@ pub enum StaleStateReason {
     LedgerAdvanced = 3,
 }
 
+#[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecoveryAction {
     RefreshWallet,

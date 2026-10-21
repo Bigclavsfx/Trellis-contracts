@@ -140,13 +140,14 @@ impl<'a> LedgerSequenceHarness<'a> {
 
     /// Move the clock forward by `ledgers` ledgers, advancing the timestamp by
     /// [`SECONDS_PER_LEDGER`] per ledger.
+    ///
+    /// The sequence saturates at `u32::MAX`. The timestamp is re-derived from
+    /// the resulting sequence rather than accumulated, so it cannot run ahead
+    /// of the ledger when the sequence stops advancing.
     pub fn advance(&mut self, ledgers: u32) {
         let next = self.sequence().saturating_add(ledgers);
-        let time = self
-            .timestamp()
-            .saturating_add((ledgers as u64).saturating_mul(SECONDS_PER_LEDGER));
         self.env.ledger().set_sequence_number(next);
-        self.env.ledger().set_timestamp(time);
+        self.env.ledger().set_timestamp(timestamp_for(next));
         self.consume(next);
     }
 

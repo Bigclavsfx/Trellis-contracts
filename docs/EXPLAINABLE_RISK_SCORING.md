@@ -105,10 +105,21 @@ flowchart TD
 
 ## 5. Operational Edge Cases & Recovery
 
-1. **False Positive Handling**:
-   - In emergency situations where legitimate large-scale operations trigger `RequireDualAuth` or `Block`, the admin can call `set_actor_exemption(actor, true)` or `reset_actor_risk(actor)`.
-2. **Ledger Sequence Reorganization / Time Skew**:
+1. **Abuse Detection Layering (`shared::abuse::assess_high_impact_abuse`)**:
+   - Integrates actor strike history directly into risk factor calculation (`PriorStrikes`).
+   - Rejects callers who have exceeded resource abuse policies (`is_abuse_blocked`) prior to running high-cost risk evaluations.
+   - For elevated risk attempts (`RequireDualAuth`, `Throttle`, `Block`), increments abuse strikes and assigns tiered abuse weight (10 for dual-auth step-up, 20 for throttling, 40 for critical block), escalating protection against repeated probing.
+   - Low-risk operations (`Allow`) bypass strike accumulation and avoid false-positive blocking of legitimate use.
+2. **False Positive Handling & Remediation**:
+   - In operational scenarios where legitimate operations trigger `RequireDualAuth` or `Block`, the admin can call `set_actor_exemption(&env, &admin, actor, true)` or `reset_actor_risk(&env, &admin, actor)`.
+3. **Step-Up Dual-Auth Review Flow**:
+   - Operations returning `RequireDualAuth` fail safely with `Error::Unauthorized`.
+   - To proceed, operations must be submitted through multi-signature approval or governance proposals (`contracts/governance` or two-step authorized execution).
+4. **Failure Modes & Degradation Handling**:
+   - If downstream state queries fail or reference pools are uninitialized, the engine defaults to safe boundaries (`max_reference_amount = 0` suppresses the amount ratio factor rather than panicking).
+   - In cases of external oracle / dependency degradation, `shared::degradation` can be combined with `assess_high_impact_abuse` to enforce fallback conservative limits.
+5. **Ledger Sequence Reorganization / Time Skew**:
    - All decay calculations rely on deterministic Soroban ledger sequences (`env.ledger().sequence()`) rather than system timestamps to avoid validator clock drift issues.
-3. **Storage Preservation & Rollback**:
-   - All risk state is maintained under namespaced persistent storage keys (`KEY_RISK_POLICY`, `KEY_ACTOR_PROFILE`, `KEY_EXEMPTION`).
+6. **Storage Preservation & Rollback**:
+   - All risk and abuse state is maintained under namespaced persistent storage keys (`KEY_RISK_POLICY`, `KEY_ACTOR_PROFILE`, `KEY_EXEMPTION`, `AbuseKey::Policy`, `AbuseKey::State`).
    - Zero modifications to core token or vault storage layouts; 100% backwards compatible.

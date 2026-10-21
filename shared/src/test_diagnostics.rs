@@ -10,12 +10,15 @@ mod tests {
         DiagnosticCategory, DiagnosticCheck, DiagnosticError, DiagnosticStatus,
     };
     use crate::errors::Error;
+    use crate::problem_details::{
+        problem_details_for_diagnostic_error, problem_details_for_error, ProblemDetails,
+    };
 
     fn setup() -> (Env, Address, Address) {
         let env = Env::default();
         let admin = Address::generate(&env);
         let user = Address::generate(&env);
-        crate::auth::set_admin(&env, &admin).unwrap();
+        crate::auth::set_admin(&env, &admin);
         (env, admin, user)
     }
 
@@ -159,5 +162,55 @@ mod tests {
         assert!(report.is_healthy);
         assert!(report.passed_count >= 3);
         assert_eq!(report.failed_count, 0);
+    }
+
+    #[test]
+    fn test_diagnostic_error_problem_details_are_stable() {
+        let cases = [
+            (
+                DiagnosticError::EmptyDiagnosticsList,
+                "TRELLIS_DIAG_EMPTY_LIST",
+                "diagnostics.empty_list",
+            ),
+            (
+                DiagnosticError::DiagnosticValidationFailed,
+                "TRELLIS_DIAG_VALIDATION_FAILED",
+                "diagnostics.validation_failed",
+            ),
+            (
+                DiagnosticError::DependencyInvariantViolated,
+                "TRELLIS_DIAG_DEPENDENCY_INVARIANT",
+                "diagnostics.dependency_invariant",
+            ),
+        ];
+
+        for (err, code, kind) in cases {
+            let details: ProblemDetails = problem_details_for_diagnostic_error(&err);
+            assert_eq!(details.code, code);
+            assert_eq!(details.kind, kind);
+            assert!(!details.remediation.is_empty());
+            assert!(!details.docs_url.is_empty());
+            assert!(!details.message.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_contract_error_problem_details_are_stable() {
+        let details = problem_details_for_error(&Error::Unauthorized);
+        assert_eq!(details.code, "TRELLIS_UNAUTHORIZED");
+        assert_eq!(details.kind, "auth.unauthorized");
+        assert!(!details.remediation.is_empty());
+        assert!(!details.docs_url.is_empty());
+    }
+
+    #[test]
+    fn test_problem_details_do_not_leak_internal_state() {
+        let details = problem_details_for_diagnostic_error(
+            &DiagnosticError::DependencyInvariantViolated,
+        );
+        // User-facing message must be safe and must not embed raw debug output.
+        assert!(!details.message.contains("DependencyInvariantViolated"));
+        assert!(!details.message.contains("panic"));
+        assert!(!details.message.contains("unwrap"));
     }
 }

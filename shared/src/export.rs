@@ -32,7 +32,7 @@
 //! See `docs/EXPORT.md` for the workflow, scope table, and maintainer runbook.
 
 use soroban_sdk::{
-    contracterror, contracttype, symbol_short, Address, Bytes, BytesN, Env, IntoVal, String,
+    contracterror, contracttype, symbol_short, xdr::ToXdr, Address, Bytes, BytesN, Env, IntoVal, String,
     Symbol, Val, Vec,
 };
 
@@ -249,7 +249,7 @@ pub fn is_forbidden_field(field: &Symbol) -> bool {
         || field == &symbol_short!("admin_key")
         || field == &symbol_short!("res_seed")
         || field == &symbol_short!("raw_pii")
-        || field == &symbol_short!("ballot_slt")
+        || field == &symbol_short!("bal_slt")
         || field == &symbol_short!("sign_key")
         || field == &symbol_short!("raw_nonce")
         || field == &symbol_short!("ip_addr")

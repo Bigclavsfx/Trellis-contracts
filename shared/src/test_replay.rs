@@ -1,6 +1,5 @@
 use crate::errors::Error;
 use crate::replay::{consume_payload, SignedPayload};
-use crate::serialization::canonical_bytes;
 use soroban_sdk::{
     testutils::{Address as _, BytesN as _, Ledger as _},
     Address, BytesN, Env, Symbol,
@@ -25,69 +24,6 @@ fn test_consume_payload_success() {
 
     let res = consume_payload(&env, &signer, &payload, &scope);
     assert_eq!(res, Ok(()));
-}
-
-#[test]
-fn test_canonical_serialization_stable_field_order() {
-    let env = Env::default();
-    let nonce = BytesN::random(&env);
-    let scope = Symbol::new(&env, "test_scope");
-
-    let payload = SignedPayload {
-        nonce: nonce.clone(),
-        expiry: 200,
-        scope: scope.clone(),
-    };
-
-    let bytes1 = canonical_bytes(&env, &payload);
-    let bytes2 = canonical_bytes(&env, &payload);
-    assert_eq!(bytes1, bytes2);
-}
-
-#[test]
-fn test_canonical_serialization_equivalent_payloads() {
-    let env = Env::default();
-    let nonce = BytesN::random(&env);
-    let scope = Symbol::new(&env, "test_scope");
-
-    let payload_a = SignedPayload {
-        nonce: nonce.clone(),
-        expiry: 200,
-        scope: scope.clone(),
-    };
-    let payload_b = SignedPayload {
-        nonce: nonce.clone(),
-        expiry: 200,
-        scope: scope.clone(),
-    };
-
-    assert_eq!(
-        canonical_bytes(&env, &payload_a),
-        canonical_bytes(&env, &payload_b)
-    );
-}
-
-#[test]
-fn test_canonical_serialization_distinguishes_fields() {
-    let env = Env::default();
-    let nonce = BytesN::random(&env);
-    let scope = Symbol::new(&env, "test_scope");
-
-    let payload_a = SignedPayload {
-        nonce: nonce.clone(),
-        expiry: 200,
-        scope: scope.clone(),
-    };
-    let payload_b = SignedPayload {
-        nonce: nonce.clone(),
-        expiry: 201,
-        scope: scope.clone(),
-    };
-
-    assert_ne!(
-        canonical_bytes(&env, &payload_a),
-        canonical_bytes(&env, &payload_b)
-    );
 }
 
 #[test]

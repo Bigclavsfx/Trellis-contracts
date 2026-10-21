@@ -62,7 +62,12 @@
 | [docs/SECURITY_INVARIANTS.md](docs/SECURITY_INVARIANTS.md) | Formal protocol invariants (token conservation, referral acyclicity, oracle quorum/staleness, admin non-revocability) with the code and error variant that enforces each one |
 | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | Trust assumptions, adversarial attack vectors per contract family, and pause/emergency-response pointers |
 | [docs/AUDIT_LEDGER.md](docs/AUDIT_LEDGER.md) | Tamper-evident hash-chained ledger for privileged/financial events: hashing rules, verification, export, failure modes, and recovery runbook |
+| [docs/STATE_SNAPSHOT_EXPORT.md](docs/STATE_SNAPSHOT_EXPORT.md) | Signed, hash-chained state snapshots for audit/debugging: Ed25519 signer registry, chain verification, bounded export, and recovery runbook |
+| [docs/DEPENDENCY_HEALTH_GUARD.md](docs/DEPENDENCY_HEALTH_GUARD.md) | Authorized dependency health-check reporting and a retry/circuit-breaker budget around degraded-mode fallback execution |
+| [docs/EVENT_DEAD_LETTER.md](docs/EVENT_DEAD_LETTER.md) | Dead-letter recovery for failed domain-event handlers: permissionless backoff retry, admin requeue/discard, reusing `shared::jobs::RetryPolicy` |
+| [docs/CLIENT_REQUEST_VALIDATION.md](docs/CLIENT_REQUEST_VALIDATION.md) | Cross-repo client request validation: schema compatibility, field/identity checks, and an idempotent retry wrapper |
 | [docs/SYNTHETIC_JOURNEY_MONITOR.md](docs/SYNTHETIC_JOURNEY_MONITOR.md) | Runnable fund/quote/settle synthetic monitor, failure attribution, and recovery guidance |
+| [docs/RECONCILIATION_JOB.md](docs/RECONCILIATION_JOB.md) | Projection reconciliation job: comparing canonical truth with derived state, dry-run safety, and idempotent repair |
 - Storage Layout
 - Documentation
 - Contribution Guide
@@ -3743,6 +3748,10 @@ This repository contains comprehensive documentation for contract design, gas op
 - [**docs/IMPORT_PIPELINE.md**](docs/IMPORT_PIPELINE.md) — Bulk import pipeline with pre-flight dry-run validation, duplicate detection, and prescriptive rollback guidance.
 - [**docs/PREFLIGHT.md**](docs/PREFLIGHT.md) — Deterministic pre-submission preflight for high-risk operations with ready/warning/blocked verdicts, remediation steps, and shared error mapping.
 - [**docs/AUDIT_LEDGER.md**](docs/AUDIT_LEDGER.md) — Append-only hash-chained ledger for privileged and financial events: hashing definition, verification and export APIs, failure-mode table, and rollback/recovery runbook.
+- [**docs/STATE_SNAPSHOT_EXPORT.md**](docs/STATE_SNAPSHOT_EXPORT.md) — Signed, hash-chained state snapshot export for audit and debugging: Ed25519 signer registry, chain verification, bounded export/verify, and rollback/recovery runbook.
+- [**docs/DEPENDENCY_HEALTH_GUARD.md**](docs/DEPENDENCY_HEALTH_GUARD.md) — Authorized dependency health-check reporting and a retry/circuit-breaker budget around degraded-mode fallback execution, closing the open-write and unbounded-retry gaps in `shared::health`/`shared::degradation`.
+- [**docs/EVENT_DEAD_LETTER.md**](docs/EVENT_DEAD_LETTER.md) — Dead-letter recovery for failed domain-event handlers: dispatch-and-capture instead of propagating, permissionless backoff retry, and admin-gated requeue/discard reusing `shared::jobs::RetryPolicy`.
+- [**docs/CLIENT_REQUEST_VALIDATION.md**](docs/CLIENT_REQUEST_VALIDATION.md) — Cross-repo client request validation: schema-version compatibility, field/semantic checks reusing `shared::semantic`, caller-identity authorization, and an idempotent retry wrapper around `shared::idempotency`.
 
 ## Module Documentation
 

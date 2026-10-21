@@ -13,6 +13,7 @@
 - [Benchmark Infrastructure](#benchmark-infrastructure)
 - [CI Gas Regression Checks](#ci-gas-regression-checks)
 - [Budget Regression Thresholds](#budget-regression-thresholds)
+- [Scaling and Retry Guards](#scaling-and-retry-guards-issue-334)
 
 ---
 
@@ -307,6 +308,30 @@ Two constraints the suite has to respect, worth knowing before extending it:
   `Error(Auth, ExistingValue)`, so the suite registers the referral contract by
   writing the same two storage entries directly — see `register_referral` in
   `budget_test.rs`.
+
+## Scaling and Retry Guards (Issue #334)
+
+The recorded thresholds fail only when a measurement exceeds a fixed number. A
+path that becomes disproportionately expensive can slip past a stale table. The
+guards below compare two measurements taken in the same run, so they need no
+recorded value and stay meaningful while the table is being refreshed.
+
+| Test | Property | Edge case it covers |
+| --- | --- | --- |
+| `withdraw_worst_case_stays_within_twice_the_common_cost` | The heaviest accepted withdrawal costs at most 2x the common one, in both CPU and memory. | The quota-configured path against the fail-open path. |
+| `rejected_withdrawal_retry_costs_no_more_than_the_first_attempt` | A retried over-limit rejection costs no more than the first attempt and leaves the balance unchanged. | Retry: a failed call must not leave state that makes the next one more expensive. |
+
+Authorization is not measured here. The suite runs under `mock_all_auths`, so
+an unauthorized caller cannot be simulated. The rejection tests cover the
+rejection paths that run before auth.
+
+**Operational edge cases.** A guard failure means a path now costs more relative
+to its own baseline, which is a stronger signal than a raw threshold breach. Do
+not raise the 2x bound to make a failure pass. Find the step that stopped scaling
+first.
+
+**Rollback.** These are test-only additions to `budget_test.rs`. Removing them
+changes no contract code and no recorded threshold.
 
 ## Soroban Cost Reference
 

@@ -22,6 +22,7 @@ pub enum ErrorDomain {
     Upgradeability,
     Import,
     Export,
+    SupportAccess,
 }
 
 /// Broad class used by clients to choose safe recovery behavior.
@@ -1228,6 +1229,86 @@ fn domain_definition(domain: &ErrorDomain, code: u32) -> Option<Definition> {
             ),
             _ => return None,
         }),
+        ErrorDomain::SupportAccess => Some(match code {
+            960 => definition(
+                "SUPPORT_SESSION_NOT_FOUND",
+                ErrorCategory::NotFound,
+                false,
+                "The support-access session is not active.",
+                Some("Refresh the session state or request a new authorized session."),
+            ),
+            961 => definition(
+                "SUPPORT_ACCESS_UNAUTHORIZED",
+                ErrorCategory::Authorization,
+                false,
+                "You are not authorized to open or use support access.",
+                Some("Contact an administrator to request the Support role."),
+            ),
+            962 | 970 => definition(
+                "SUPPORT_SCOPE_INVALID",
+                ErrorCategory::Validation,
+                false,
+                "The support-access scope or duration is invalid.",
+                Some("Choose an explicit resource scope and a positive duration."),
+            ),
+            963 => definition(
+                "SUPPORT_DURATION_TOO_LONG",
+                ErrorCategory::Validation,
+                false,
+                "The support-access duration exceeds the allowed maximum.",
+                Some("Choose a duration of one hour or less."),
+            ),
+            964 => definition(
+                "SUPPORT_SESSION_EXPIRED",
+                ErrorCategory::Conflict,
+                false,
+                "The support-access session has expired.",
+                Some("Request a new authorized session if support access is still needed."),
+            ),
+            965 | 966 => definition(
+                "SUPPORT_ACTION_NOT_PERMITTED",
+                ErrorCategory::Authorization,
+                false,
+                "This action is outside the support-access scope.",
+                Some("Use an authorized session with the minimum required scope."),
+            ),
+            967 | 969 => definition(
+                "SUPPORT_SESSION_LIMIT",
+                ErrorCategory::Conflict,
+                false,
+                "The support-access session limit has been reached.",
+                Some("Revoke or allow an existing session to expire before retrying."),
+            ),
+            968 => definition(
+                "SUPPORT_TARGET_NOT_ALLOWED",
+                ErrorCategory::Authorization,
+                false,
+                "This account cannot be accessed through support impersonation.",
+                Some("Use an eligible end-user account."),
+            ),
+            971 => definition(
+                "SUPPORT_AUDIT_UNAVAILABLE",
+                ErrorCategory::Internal,
+                false,
+                "Support access could not be recorded safely.",
+                Some("Stop the operation and have an operator verify the audit ledger."),
+            ),
+            972 => definition(
+                "SUPPORT_SESSION_ID_EXHAUSTED",
+                ErrorCategory::Internal,
+                false,
+                "A support session could not be created safely.",
+                Some("Stop support access changes and contact an operator."),
+            ),
+            973 => definition(
+                "SUPPORT_TIMESTAMP_OVERFLOW",
+                ErrorCategory::Internal,
+                false,
+                "A support session could not be created safely.",
+                Some("Stop support access changes and contact an operator."),
+            ),
+            _ => return None,
+        }),
         _ => None,
     }
 }
@@ -1494,6 +1575,7 @@ mod tests {
             (ErrorDomain::Import, 940, 949),
             (ErrorDomain::Export, 920, 934),
             (ErrorDomain::Marketplace, 2000, 2023),
+            (ErrorDomain::SupportAccess, 960, 973),
         ];
 
         for (domain, first, last) in ranges {
@@ -1551,6 +1633,7 @@ mod tests {
             (ErrorDomain::Export, 920, 934),
             (ErrorDomain::Import, 940, 949),
             (ErrorDomain::Marketplace, 2000, 2023),
+            (ErrorDomain::SupportAccess, 960, 973),
         ];
 
         for (domain, first, last) in ranges {
@@ -1626,4 +1709,3 @@ mod tests {
         assert_eq!(reg_err.category, ErrorCategory::NotFound);
     }
 }
-

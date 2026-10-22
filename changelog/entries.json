@@ -286,5 +286,14 @@
     "migration_notes": "",
     "issue": 267,
     "pr": null
+    },
+  {
+    "version": "unreleased",
+    "date": "2026-10-22",
+    "impact": "compatible",
+    "summary": "Implemented snapshot restore verification for critical data and derived indexes in shared::snapshot_restore: tests restores against invariants across 6 modules, rebuilds secondary views, fails loudly with repair steps, and provides rollback.",
+    "migration_notes": "",
+    "issue": null,
+    "pr": null
   }
 ]

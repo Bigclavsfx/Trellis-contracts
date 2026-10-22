@@ -35,9 +35,22 @@ record() {
 }
 
 # In a real environment, these would invoke Soroban CLI or a Rust CLI tool
-# to query the ledger state. Here we simulate the validation checks.
+# to query the ledger state. Here we invoke the snapshot restore verification engine.
 
 echo "Running read-only restore validation checks..." >&2
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NODE_BIN="${NODE_BIN:-node}"
+
+check_snapshot_restore_verification() {
+  if command -v "$NODE_BIN" >/dev/null 2>&1 && [ -f "${SCRIPT_DIR}/verify-snapshot-restore.cjs" ]; then
+    if "$NODE_BIN" "${SCRIPT_DIR}/verify-snapshot-restore.cjs" >/dev/null 2>&1; then
+      record "snapshot:invariants_and_derived_views" 0 ""
+    else
+      record "snapshot:invariants_and_derived_views" 1 "Snapshot restore verification failed. See docs/SNAPSHOT_RESTORE_VERIFICATION.md."
+    fi
+  fi
+}
 
 # 1. Missing Records Check
 # Verifies that expected core records (e.g. global configuration, core accounts) exist.
@@ -91,6 +104,7 @@ check_missing_records
 check_orphaned_records
 check_duplicated_records
 check_inconsistent_records
+check_snapshot_restore_verification
 
 if [ "$JSON" -eq 1 ]; then
   printf '{"pass":%d,"fail":%d}\n' "$PASS" "$FAIL"

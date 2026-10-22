@@ -90,6 +90,24 @@ for f in Cargo.toml shared/src/lib.rs shared/src/compat.rs shared/src/quota.rs s
   if [ -e "$f" ]; then record "fixture:$f" 0 ""; else record "fixture:$f" 1 "Missing $f; pull latest main / run git status"; fi
 done
 
+# Contract modules (Treasury, Aid, Referral, Governance, Oracle, Marketplace)
+for m in treasury-contract aid-contract referral-contract governance-contract oracle-contract nft-marketplace; do
+  if [ -e "contracts/$m/Cargo.toml" ] && [ -e "contracts/$m/src/lib.rs" ]; then
+    record "module:$m" 0 ""
+  else
+    record "module:$m" 1 "Missing contract module contracts/$m; pull latest main"
+  fi
+done
+
+# Seed data fixtures
+for s in treasury aid referral governance oracle marketplace; do
+  if [ -e "fixtures/backfill/${s}.json" ]; then
+    record "seed:${s}" 0 ""
+  else
+    record "seed:${s}" 1 "Missing seed fixture fixtures/backfill/${s}.json"
+  fi
+done
+
 if [ "$SELF_TEST" -eq 1 ]; then
   if [ ! -x "$0" ]; then echo "SELF-TEST FAIL: diagnostics.sh not executable"; exit 1; fi
   if [ ! -x "./scripts/validate-config.sh" ]; then echo "SELF-TEST FAIL: validate-config.sh not executable"; exit 1; fi

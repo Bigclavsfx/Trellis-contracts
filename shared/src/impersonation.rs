@@ -28,10 +28,9 @@
 
 use soroban_sdk::{contracterror, contracttype, symbol_short, Address, Env, Symbol, Vec};
 
-use crate::auth::{has_permission, has_role, require_permission, Permission, Role};
-use crate::errors::Error;
-use crate::storage::{persistent_get, persistent_has, persistent_remove, persistent_set};
-use crate::timeline::{record_action_audit_event, TimelineEventType};
+use crate::audit_ledger::{append_event, genesis_hash, AuditEventKind, AuditEventParams};
+use crate::auth::{has_permission, has_role, Permission, Role};
+use crate::storage::{persistent_get, persistent_remove, persistent_set};
 
 // ---------------------------------------------------------------------------
 // Error codes
@@ -62,6 +61,14 @@ pub enum ImpersonationError {
     TargetNotImpersonatable = 968,
     /// Maximum concurrent impersonation sessions exceeded.
     TooManyActiveSessions = 969,
+    /// Session duration must be greater than zero.
+    DurationInvalid = 970,
+    /// The immutable audit event could not be appended.
+    AuditFailure = 971,
+    /// Session identifier space is exhausted.
+    SessionIdExhausted = 972,
+    /// Session expiry timestamp would overflow.
+    TimestampOverflow = 973,
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +105,7 @@ pub enum ResourceType {
     Roles,
     /// Configuration settings.
     Config,
-    /// All resources (use with caution).
+    /// Legacy wildcard; rejected for support sessions.
     All,
 }
 
@@ -186,6 +193,14 @@ pub struct SessionResult {
     pub is_new: bool,
 }
 
+/// Minimal, user-safe notice data for a target account.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SupportAccessNotice {
+    /// Ledger timestamp at which support access expires.
+    pub expires_at: u64,
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -224,9 +239,9 @@ enum ImpersonationKey {
 ///
 /// # Requirements
 /// - Caller must hold ImpersonateUser permission (Support role)
-/// - Target user must not be an admin (admins cannot be impersonated)
+/// - Target user must not hold a privileged or service role
 /// - Duration must not exceed MAX_SESSION_DURATION
-/// - Scope must be valid for the target user's data
+/// - At least one explicit resource scope must be provided
 ///
 /// # Returns
 /// - SessionResult with the created session and whether it's new
@@ -235,13 +250,15 @@ pub fn create_session(
     impersonator: &Address,
     params: SessionParams,
 ) -> Result<SessionResult, ImpersonationError> {
+    impersonator.require_auth();
+
     // Authorization check using permission system
     if !has_permission(env, impersonator, Permission::ImpersonateUser) {
         return Err(ImpersonationError::Unauthorized);
     }
 
-    // Validate target user is not an admin
-    if has_role(env, &params.target_user, Role::Admin) {
+    // Support access is only for ordinary end-user accounts.
+    if !is_eligible_target(env, &params.target_user) {
         return Err(ImpersonationError::TargetNotImpersonatable);
     }
 
@@ -249,22 +266,37 @@ pub fn create_session(
     if params.duration_sec > MAX_SESSION_DURATION {
         return Err(ImpersonationError::DurationTooLong);
     }
+    if params.duration_sec == 0 {
+        return Err(ImpersonationError::DurationInvalid);
+    }
 
     // Validate scope
-    if !is_valid_scope(env, &params.scope, &params.resource_scopes) {
+    if !is_valid_scope(&params.scope, &params.resource_scopes) {
         return Err(ImpersonationError::InvalidScope);
     }
 
-    // Check concurrent session limit
+    // Expired sessions must not consume the concurrent-session limit.
     let impersonator_sessions = get_impersonator_sessions(env, impersonator);
-    if impersonator_sessions.len() >= MAX_CONCURRENT_SESSIONS {
+    let now = env.ledger().timestamp();
+    let mut active_session_count = 0;
+    for session_id in impersonator_sessions.iter() {
+        if let Some(session) = get_session(env, session_id) {
+            if session.state == SessionState::Active && now >= session.expires_at {
+                expire_session(env, session)?;
+            } else if session.state == SessionState::Active {
+                active_session_count += 1;
+            }
+        }
+    }
+    if active_session_count >= MAX_CONCURRENT_SESSIONS {
         return Err(ImpersonationError::TooManyActiveSessions);
     }
 
     // Create session
-    let session_id = next_session_id(env);
-    let now = env.ledger().timestamp();
-    let expires_at = now.saturating_add(params.duration_sec);
+    let session_id = next_session_id(env)?;
+    let expires_at = now
+        .checked_add(params.duration_sec)
+        .ok_or(ImpersonationError::TimestampOverflow)?;
 
     let session = ImpersonationSession {
         session_id,
@@ -280,7 +312,19 @@ pub fn create_session(
         action_count: 0,
     };
 
-    // Store session
+    append_support_audit(
+        env,
+        impersonator,
+        &params.target_user,
+        session_id,
+        symbol_short!("supp_crt"),
+        Some(params.scope.as_symbol()),
+        Some(i128::from(expires_at)),
+        Some(params.reason.clone()),
+    )?;
+
+    // Store session only after the required audit entry is committed.
+    persistent_set(env, &ImpersonationKey::NextSessionId, &session_id);
     persistent_set(env, &ImpersonationKey::Session(session_id), &session);
 
     // Index by target user
@@ -299,21 +343,6 @@ pub fn create_session(
         env,
         &ImpersonationKey::ImpersonatorSessions(impersonator.clone()),
         &impersonator_session_list,
-    );
-
-    // Log audit event
-    let _ = record_action_audit_event(
-        env,
-        impersonator,
-        TimelineEventType::ConfigChanged,
-        resource_link_for_session(env, session_id),
-        Symbol::new(env, "impersonation"),
-        symbol_short!("create"),
-        params.reason,
-        Some(params.target_user.clone()),
-        Some(symbol_short!("scope")),
-        Some(i128::from(params.scope as u8)),
-        Some(i128::from(expires_at)),
     );
 
     // Emit event for visibility
@@ -346,6 +375,7 @@ pub fn revoke_session(
     caller: &Address,
     session_id: u64,
 ) -> Result<(), ImpersonationError> {
+    caller.require_auth();
     let mut session = get_session(env, session_id).ok_or(ImpersonationError::SessionNotFound)?;
 
     // Authorization: only creator or someone with impersonation permission can revoke
@@ -357,28 +387,28 @@ pub fn revoke_session(
     if session.state != SessionState::Active {
         return Err(ImpersonationError::SessionNotFound);
     }
+    if env.ledger().timestamp() >= session.expires_at {
+        expire_session(env, session)?;
+        return Err(ImpersonationError::SessionExpired);
+    }
 
-    // Mark as revoked
+    append_support_audit(
+        env,
+        caller,
+        &session.target_user,
+        session_id,
+        symbol_short!("supp_rvk"),
+        None,
+        None,
+        Some(session.reason.clone()),
+    )?;
+
+    // Mark as revoked only after the required audit entry is committed.
     session.state = SessionState::Revoked;
     persistent_set(env, &ImpersonationKey::Session(session_id), &session);
 
     // Remove from active indexes
     remove_from_active_indexes(env, &session);
-
-    // Log audit event
-    let _ = record_action_audit_event(
-        env,
-        caller,
-        TimelineEventType::ConfigChanged,
-        resource_link_for_session(env, session_id),
-        Symbol::new(env, "impersonation"),
-        symbol_short!("revoke"),
-        session.reason,
-        Some(session.target_user),
-        None,
-        None,
-        None,
-    );
 
     // Emit event
     env.events().publish(
@@ -405,16 +435,12 @@ pub fn validate_session(
 
     let now = env.ledger().timestamp();
     if now >= session.expires_at {
-        // Auto-expire the session
-        let mut expired_session = session;
-        expired_session.state = SessionState::Expired;
-        persistent_set(
-            env,
-            &ImpersonationKey::Session(session_id),
-            &expired_session,
-        );
-        remove_from_active_indexes(env, &expired_session);
+        expire_session(env, session)?;
         return Err(ImpersonationError::SessionExpired);
+    }
+    if !is_eligible_target(env, &session.target_user) {
+        revoke_for_target_role(env, session)?;
+        return Err(ImpersonationError::TargetNotImpersonatable);
     }
 
     Ok(session)
@@ -428,8 +454,20 @@ pub fn check_action_permission(
     resource_type: ResourceType,
     resource_id: Option<u64>,
 ) -> Result<(), ImpersonationError> {
+    let active_session = validate_session(env, session.session_id)?;
+    if active_session != *session {
+        return Err(ImpersonationError::SessionNotFound);
+    }
+    if active_session
+        .resource_scopes
+        .iter()
+        .any(|scope| scope.resource_type == ResourceType::All)
+    {
+        return Err(ImpersonationError::ActionNotPermitted);
+    }
+
     // Check scope-based permissions
-    match session.scope {
+    match active_session.scope {
         ImpersonationScope::ReadOnly => {
             if is_mutation_action(action_type) {
                 return Err(ImpersonationError::ActionNotPermitted);
@@ -441,27 +479,27 @@ pub fn check_action_permission(
             }
         }
         ImpersonationScope::SafeMutations => {
-            if is_dangerous_action(action_type) && !session.allow_dangerous_mutations {
+            if is_dangerous_action(action_type) && !active_session.allow_dangerous_mutations {
                 return Err(ImpersonationError::DangerousMutationBlocked);
             }
         }
         ImpersonationScope::FullAccess => {
             // Full access still respects dangerous mutation flag
-            if is_dangerous_action(action_type) && !session.allow_dangerous_mutations {
+            if is_dangerous_action(action_type) && !active_session.allow_dangerous_mutations {
                 return Err(ImpersonationError::DangerousMutationBlocked);
             }
         }
     }
 
     // Check resource scope
-    if !is_resource_permitted(&session.resource_scopes, resource_type, resource_id) {
+    if !is_resource_permitted(&active_session.resource_scopes, resource_type, resource_id) {
         return Err(ImpersonationError::ActionNotPermitted);
     }
 
     Ok(())
 }
 
-/// Records an action taken during an impersonation session.
+/// Records an authorized action attempt before the protected operation.
 pub fn record_action(
     env: &Env,
     session_id: u64,
@@ -470,25 +508,23 @@ pub fn record_action(
     resource_id: Option<u64>,
 ) -> Result<(), ImpersonationError> {
     let mut session = validate_session(env, session_id)?;
+    session.impersonator.require_auth();
+    check_action_permission(env, &session, action_type, resource_type, resource_id)?;
+
+    append_support_audit(
+        env,
+        &session.impersonator,
+        &session.target_user,
+        session_id,
+        symbol_short!("supp_act"),
+        Some(action_type.as_symbol()),
+        resource_id.map(i128::from),
+        Some(resource_type.as_symbol()),
+    )?;
 
     // Increment action count
     session.action_count = session.action_count.saturating_add(1);
     persistent_set(env, &ImpersonationKey::Session(session_id), &session);
-
-    // Log audit event
-    let _ = record_action_audit_event(
-        env,
-        &session.impersonator,
-        TimelineEventType::RecordUpdated,
-        resource_link_for_resource(env, resource_type, resource_id),
-        Symbol::new(env, "impersonation"),
-        action_type.as_symbol(),
-        action_type.as_symbol(),
-        Some(session.target_user),
-        Some(resource_type.as_symbol()),
-        resource_id.map(|id| i128::from(id)),
-        Some(i128::from(session.action_count)),
-    );
 
     // Emit event
     env.events().publish(
@@ -549,6 +585,29 @@ pub fn get_current_impersonation(env: &Env, target_user: &Address) -> Option<Imp
     sessions.first()
 }
 
+/// Returns only the expiry timestamp for user-safe support-access notices.
+///
+/// The result intentionally omits the maintainer identity, reason, and scope.
+pub fn support_access_notice(
+    env: &Env,
+    target_user: &Address,
+) -> Option<SupportAccessNotice> {
+    let now = env.ledger().timestamp();
+    for session_id in get_target_sessions(env, target_user).iter() {
+        if let Some(session) = get_session(env, session_id) {
+            if session.state == SessionState::Active
+                && now < session.expires_at
+                && is_eligible_target(env, target_user)
+            {
+                return Some(SupportAccessNotice {
+                    expires_at: session.expires_at,
+                });
+            }
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Action Types
 // ---------------------------------------------------------------------------
@@ -587,6 +646,17 @@ impl ImpersonationAction {
     }
 }
 
+impl ImpersonationScope {
+    fn as_symbol(&self) -> Symbol {
+        match self {
+            ImpersonationScope::ReadOnly => symbol_short!("readonly"),
+            ImpersonationScope::Diagnostic => symbol_short!("diagnos"),
+            ImpersonationScope::SafeMutations => symbol_short!("safemut"),
+            ImpersonationScope::FullAccess => symbol_short!("full"),
+        }
+    }
+}
+
 impl ResourceType {
     fn as_symbol(&self) -> Symbol {
         match self {
@@ -605,19 +675,40 @@ impl ResourceType {
 // Helper Functions
 // ---------------------------------------------------------------------------
 
+fn is_eligible_target(env: &Env, target_user: &Address) -> bool {
+    for role in [
+        Role::Admin,
+        Role::Upgrader,
+        Role::TreasuryManager,
+        Role::Pauser,
+        Role::ReferralManager,
+        Role::OracleSigner,
+        Role::ServiceActor,
+        Role::Support,
+    ] {
+        if has_role(env, target_user, role) {
+            return false;
+        }
+    }
+    true
+}
+
 fn is_valid_scope(
-    env: &Env,
     scope: &ImpersonationScope,
     resource_scopes: &Vec<ResourceScope>,
 ) -> bool {
+    if resource_scopes.is_empty() {
+        return false;
+    }
+
     // Basic validation: scope should match resource scopes
     match scope {
         ImpersonationScope::ReadOnly | ImpersonationScope::Diagnostic => {
-            // These scopes should not include treasury or roles
+            // Read-only support must not expose privileged resources.
             for rs in resource_scopes.iter() {
                 if matches!(
                     rs.resource_type,
-                    ResourceType::Treasury | ResourceType::Roles
+                    ResourceType::Treasury | ResourceType::Roles | ResourceType::Config
                 ) {
                     return false;
                 }
@@ -625,7 +716,9 @@ fn is_valid_scope(
         }
         _ => {}
     }
-    true
+    resource_scopes
+        .iter()
+        .all(|scope| scope.resource_type != ResourceType::All)
 }
 
 fn is_mutation_action(action: ImpersonationAction) -> bool {
@@ -649,6 +742,7 @@ fn is_dangerous_action(action: ImpersonationAction) -> bool {
         ImpersonationAction::DangerousMutation
             | ImpersonationAction::RoleManagement
             | ImpersonationAction::TreasuryOperation
+            | ImpersonationAction::ConfigChange
     )
 }
 
@@ -657,15 +751,7 @@ fn is_resource_permitted(
     resource_type: ResourceType,
     resource_id: Option<u64>,
 ) -> bool {
-    // If no specific scopes, assume all resources are permitted
-    if resource_scopes.is_empty() {
-        return true;
-    }
-
     for scope in resource_scopes.iter() {
-        if scope.resource_type == ResourceType::All {
-            return true;
-        }
         if scope.resource_type == resource_type {
             // If resource_id is None in scope, all of that type are permitted
             if scope.resource_id.is_none() {
@@ -698,11 +784,12 @@ fn get_impersonator_sessions(env: &Env, impersonator: &Address) -> Vec<u64> {
     .unwrap_or_else(|| Vec::new(env))
 }
 
-fn next_session_id(env: &Env) -> u64 {
+fn next_session_id(env: &Env) -> Result<u64, ImpersonationError> {
     let current: u64 = persistent_get(env, &ImpersonationKey::NextSessionId).unwrap_or(0);
-    let next = current.saturating_add(1);
-    persistent_set(env, &ImpersonationKey::NextSessionId, &next);
-    next
+    let next = current
+        .checked_add(1)
+        .ok_or(ImpersonationError::SessionIdExhausted)?;
+    Ok(next)
 }
 
 fn remove_from_active_indexes(env: &Env, session: &ImpersonationSession) {
@@ -743,33 +830,95 @@ fn remove_from_active_indexes(env: &Env, session: &ImpersonationSession) {
     }
 }
 
-fn resource_link_for_session(env: &Env, session_id: u64) -> crate::timeline::ResourceLink {
-    crate::timeline::ResourceLink {
-        kind: soroban_sdk::Bytes::from_slice(env, b"impersonation"),
-        id: session_id,
-        revision: 1,
-    }
+fn append_support_audit(
+    env: &Env,
+    actor: &Address,
+    target_user: &Address,
+    session_id: u64,
+    module: Symbol,
+    attribute: Option<Symbol>,
+    previous_amount: Option<i128>,
+    note: Option<Symbol>,
+) -> Result<(), ImpersonationError> {
+    append_event(
+        env,
+        AuditEventParams {
+            kind: AuditEventKind::PrivilegedAction,
+            module,
+            actor: actor.clone(),
+            subject: Some(target_user.clone()),
+            resource: None,
+            attribute,
+            amount: Some(i128::from(session_id)),
+            previous_amount,
+            note,
+            correlation_id: genesis_hash(env),
+        },
+    )
+    .map(|_| ())
+    .map_err(|_| ImpersonationError::AuditFailure)
 }
 
-fn resource_link_for_resource(
+fn expire_session(
     env: &Env,
-    resource_type: ResourceType,
-    resource_id: Option<u64>,
-) -> crate::timeline::ResourceLink {
-    let kind_bytes: &[u8] = match resource_type {
-        ResourceType::Aid => b"aid",
-        ResourceType::Payment => b"payment",
-        ResourceType::Escrow => b"escrow",
-        ResourceType::Treasury => b"treasury",
-        ResourceType::Roles => b"roles",
-        ResourceType::Config => b"config",
-        ResourceType::All => b"all",
-    };
-    crate::timeline::ResourceLink {
-        kind: soroban_sdk::Bytes::from_slice(env, kind_bytes),
-        id: resource_id.unwrap_or(0),
-        revision: 1,
-    }
+    mut session: ImpersonationSession,
+) -> Result<(), ImpersonationError> {
+    append_support_audit(
+        env,
+        &session.impersonator,
+        &session.target_user,
+        session.session_id,
+        symbol_short!("supp_exp"),
+        None,
+        Some(i128::from(session.expires_at)),
+        Some(session.reason.clone()),
+    )?;
+    session.state = SessionState::Expired;
+    persistent_set(
+        env,
+        &ImpersonationKey::Session(session.session_id),
+        &session,
+    );
+    remove_from_active_indexes(env, &session);
+    env.events().publish(
+        (
+            Symbol::new(env, "impersonation"),
+            Symbol::new(env, "session_expired"),
+        ),
+        (session.session_id, session.target_user),
+    );
+    Ok(())
+}
+
+fn revoke_for_target_role(
+    env: &Env,
+    mut session: ImpersonationSession,
+) -> Result<(), ImpersonationError> {
+    append_support_audit(
+        env,
+        &session.impersonator,
+        &session.target_user,
+        session.session_id,
+        symbol_short!("supp_rvk"),
+        Some(symbol_short!("targrole")),
+        Some(i128::from(session.expires_at)),
+        Some(session.reason.clone()),
+    )?;
+    session.state = SessionState::Revoked;
+    persistent_set(
+        env,
+        &ImpersonationKey::Session(session.session_id),
+        &session,
+    );
+    remove_from_active_indexes(env, &session);
+    env.events().publish(
+        (
+            Symbol::new(env, "impersonation"),
+            Symbol::new(env, "session_revoked"),
+        ),
+        (session.session_id, session.impersonator),
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -781,9 +930,19 @@ mod tests {
     use super::*;
     use soroban_sdk::testutils::{Address as _, Ledger as _};
 
+    fn resource_scope(env: &Env, resource_type: ResourceType) -> Vec<ResourceScope> {
+        let mut scopes = Vec::new(env);
+        scopes.push_back(ResourceScope {
+            resource_type,
+            resource_id: None,
+        });
+        scopes
+    }
+
     #[test]
     fn test_create_session_basic() {
         let env = Env::default();
+        env.mock_all_auths();
         let support = Address::generate(&env);
         let target_user = Address::generate(&env);
 
@@ -797,7 +956,7 @@ mod tests {
         let params = SessionParams {
             target_user: target_user.clone(),
             scope: ImpersonationScope::ReadOnly,
-            resource_scopes: Vec::new(&env),
+            resource_scopes: resource_scope(&env, ResourceType::Aid),
             duration_sec: DEFAULT_SESSION_DURATION,
             allow_dangerous_mutations: false,
             reason: Symbol::new(&env, "debug_issue"),
@@ -811,18 +970,21 @@ mod tests {
         assert_eq!(session_result.session.impersonator, support);
         assert_eq!(session_result.session.target_user, target_user);
         assert_eq!(session_result.session.state, SessionState::Active);
+        assert_eq!(crate::audit_ledger::length(&env), 1);
+        assert!(crate::audit_ledger::verify_chain(&env).verified);
     }
 
     #[test]
     fn test_unauthorized_session_creation() {
         let env = Env::default();
+        env.mock_all_auths();
         let unauthorized = Address::generate(&env);
         let target_user = Address::generate(&env);
 
         let params = SessionParams {
             target_user,
             scope: ImpersonationScope::ReadOnly,
-            resource_scopes: Vec::new(&env),
+            resource_scopes: resource_scope(&env, ResourceType::Aid),
             duration_sec: DEFAULT_SESSION_DURATION,
             allow_dangerous_mutations: false,
             reason: Symbol::new(&env, "debug_issue"),
@@ -835,6 +997,7 @@ mod tests {
     #[test]
     fn test_duration_too_long() {
         let env = Env::default();
+        env.mock_all_auths();
         let support = Address::generate(&env);
         let target_user = Address::generate(&env);
 
@@ -846,7 +1009,7 @@ mod tests {
         let params = SessionParams {
             target_user,
             scope: ImpersonationScope::ReadOnly,
-            resource_scopes: Vec::new(&env),
+            resource_scopes: resource_scope(&env, ResourceType::Aid),
             duration_sec: MAX_SESSION_DURATION + 1,
             allow_dangerous_mutations: false,
             reason: Symbol::new(&env, "debug_issue"),
@@ -859,6 +1022,7 @@ mod tests {
     #[test]
     fn test_session_expiration() {
         let env = Env::default();
+        env.mock_all_auths();
         let support = Address::generate(&env);
         let target_user = Address::generate(&env);
 
@@ -870,7 +1034,7 @@ mod tests {
         let params = SessionParams {
             target_user: target_user.clone(),
             scope: ImpersonationScope::ReadOnly,
-            resource_scopes: Vec::new(&env),
+            resource_scopes: resource_scope(&env, ResourceType::Aid),
             duration_sec: 10, // 10 seconds
             allow_dangerous_mutations: false,
             reason: Symbol::new(&env, "debug_issue"),
@@ -884,11 +1048,14 @@ mod tests {
 
         let validation = validate_session(&env, session_id);
         assert_eq!(validation, Err(ImpersonationError::SessionExpired));
+        assert_eq!(crate::audit_ledger::length(&env), 2);
+        assert!(crate::audit_ledger::verify_chain(&env).verified);
     }
 
     #[test]
     fn test_read_only_scope_blocks_mutations() {
         let env = Env::default();
+        env.mock_all_auths();
         let support = Address::generate(&env);
         let target_user = Address::generate(&env);
 
@@ -900,7 +1067,7 @@ mod tests {
         let params = SessionParams {
             target_user: target_user.clone(),
             scope: ImpersonationScope::ReadOnly,
-            resource_scopes: Vec::new(&env),
+            resource_scopes: resource_scope(&env, ResourceType::Aid),
             duration_sec: DEFAULT_SESSION_DURATION,
             allow_dangerous_mutations: false,
             reason: Symbol::new(&env, "debug_issue"),
@@ -918,6 +1085,17 @@ mod tests {
             Some(1),
         );
         assert_eq!(permission, Err(ImpersonationError::ActionNotPermitted));
+        assert_eq!(
+            record_action(
+                &env,
+                session.session_id,
+                ImpersonationAction::SafeMutation,
+                ResourceType::Aid,
+                Some(1),
+            ),
+            Err(ImpersonationError::ActionNotPermitted)
+        );
+        assert_eq!(crate::audit_ledger::length(&env), 1);
 
         // Read action should be allowed
         let read_permission = check_action_permission(
@@ -928,11 +1106,22 @@ mod tests {
             Some(1),
         );
         assert!(read_permission.is_ok());
+        record_action(
+            &env,
+            session.session_id,
+            ImpersonationAction::Read,
+            ResourceType::Aid,
+            Some(1),
+        )
+        .unwrap();
+        assert_eq!(crate::audit_ledger::length(&env), 2);
+        assert!(crate::audit_ledger::verify_chain(&env).verified);
     }
 
     #[test]
     fn test_dangerous_mutation_blocked() {
         let env = Env::default();
+        env.mock_all_auths();
         let support = Address::generate(&env);
         let target_user = Address::generate(&env);
 
@@ -944,7 +1133,7 @@ mod tests {
         let params = SessionParams {
             target_user: target_user.clone(),
             scope: ImpersonationScope::SafeMutations,
-            resource_scopes: Vec::new(&env),
+            resource_scopes: resource_scope(&env, ResourceType::Treasury),
             duration_sec: DEFAULT_SESSION_DURATION,
             allow_dangerous_mutations: false, // Dangerous mutations not allowed
             reason: Symbol::new(&env, "debug_issue"),
@@ -970,6 +1159,7 @@ mod tests {
     #[test]
     fn test_session_revocation() {
         let env = Env::default();
+        env.mock_all_auths();
         let support = Address::generate(&env);
         let target_user = Address::generate(&env);
 
@@ -981,7 +1171,7 @@ mod tests {
         let params = SessionParams {
             target_user: target_user.clone(),
             scope: ImpersonationScope::ReadOnly,
-            resource_scopes: Vec::new(&env),
+            resource_scopes: resource_scope(&env, ResourceType::Aid),
             duration_sec: DEFAULT_SESSION_DURATION,
             allow_dangerous_mutations: false,
             reason: Symbol::new(&env, "debug_issue"),
@@ -989,6 +1179,7 @@ mod tests {
 
         let result = create_session(&env, &support, params).unwrap();
         let session_id = result.session.session_id;
+        assert!(support_access_notice(&env, &target_user).is_some());
 
         // Revoke the session
         let revoke_result = revoke_session(&env, &support, session_id);
@@ -997,11 +1188,15 @@ mod tests {
         // Verify session is revoked
         let validation = validate_session(&env, session_id);
         assert_eq!(validation, Err(ImpersonationError::SessionNotFound));
+        assert!(support_access_notice(&env, &target_user).is_none());
+        assert_eq!(crate::audit_ledger::length(&env), 2);
+        assert!(crate::audit_ledger::verify_chain(&env).verified);
     }
 
     #[test]
     fn test_resource_scope_filtering() {
         let env = Env::default();
+        env.mock_all_auths();
         let support = Address::generate(&env);
         let target_user = Address::generate(&env);
 
@@ -1052,6 +1247,7 @@ mod tests {
     #[test]
     fn test_is_being_impersonated() {
         let env = Env::default();
+        env.mock_all_auths();
         let support = Address::generate(&env);
         let target_user = Address::generate(&env);
 
@@ -1063,7 +1259,7 @@ mod tests {
         let params = SessionParams {
             target_user: target_user.clone(),
             scope: ImpersonationScope::ReadOnly,
-            resource_scopes: Vec::new(&env),
+            resource_scopes: resource_scope(&env, ResourceType::Aid),
             duration_sec: DEFAULT_SESSION_DURATION,
             allow_dangerous_mutations: false,
             reason: Symbol::new(&env, "debug_issue"),
@@ -1085,6 +1281,7 @@ mod tests {
     #[test]
     fn test_concurrent_session_limit() {
         let env = Env::default();
+        env.mock_all_auths();
         let support = Address::generate(&env);
 
         // Setup admin and grant Support role
@@ -1098,7 +1295,7 @@ mod tests {
             let params = SessionParams {
                 target_user,
                 scope: ImpersonationScope::ReadOnly,
-                resource_scopes: Vec::new(&env),
+                resource_scopes: resource_scope(&env, ResourceType::Aid),
                 duration_sec: DEFAULT_SESSION_DURATION,
                 allow_dangerous_mutations: false,
                 reason: Symbol::new(&env, "debug_issue"),
@@ -1111,7 +1308,7 @@ mod tests {
         let params = SessionParams {
             target_user,
             scope: ImpersonationScope::ReadOnly,
-            resource_scopes: Vec::new(&env),
+            resource_scopes: resource_scope(&env, ResourceType::Aid),
             duration_sec: DEFAULT_SESSION_DURATION,
             allow_dangerous_mutations: false,
             reason: Symbol::new(&env, "debug_issue"),
@@ -1119,5 +1316,108 @@ mod tests {
 
         let result = create_session(&env, &support, params);
         assert_eq!(result, Err(ImpersonationError::TooManyActiveSessions));
+    }
+
+    #[test]
+    fn test_unscoped_session_is_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let support = Address::generate(&env);
+        let target_user = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let _ = crate::auth::initialize_admin(&env, &admin);
+        let _ = crate::auth::grant_role(&env, &admin, &support, Role::Support);
+
+        let result = create_session(
+            &env,
+            &support,
+            SessionParams {
+                target_user,
+                scope: ImpersonationScope::ReadOnly,
+                resource_scopes: Vec::new(&env),
+                duration_sec: DEFAULT_SESSION_DURATION,
+                allow_dangerous_mutations: false,
+                reason: Symbol::new(&env, "debug_issue"),
+            },
+        );
+        assert_eq!(result, Err(ImpersonationError::InvalidScope));
+
+        let all_resources = create_session(
+            &env,
+            &support,
+            SessionParams {
+                target_user: Address::generate(&env),
+                scope: ImpersonationScope::ReadOnly,
+                resource_scopes: resource_scope(&env, ResourceType::All),
+                duration_sec: DEFAULT_SESSION_DURATION,
+                allow_dangerous_mutations: false,
+                reason: Symbol::new(&env, "debug_issue"),
+            },
+        );
+        assert_eq!(all_resources, Err(ImpersonationError::InvalidScope));
+
+        let privileged_target = Address::generate(&env);
+        let _ = crate::auth::grant_role(
+            &env,
+            &admin,
+            &privileged_target,
+            Role::TreasuryManager,
+        );
+        let privileged_session = create_session(
+            &env,
+            &support,
+            SessionParams {
+                target_user: privileged_target,
+                scope: ImpersonationScope::ReadOnly,
+                resource_scopes: resource_scope(&env, ResourceType::Aid),
+                duration_sec: DEFAULT_SESSION_DURATION,
+                allow_dangerous_mutations: false,
+                reason: Symbol::new(&env, "debug_issue"),
+            },
+        );
+        assert_eq!(
+            privileged_session,
+            Err(ImpersonationError::TargetNotImpersonatable)
+        );
+        assert_eq!(crate::audit_ledger::length(&env), 0);
+    }
+
+    #[test]
+    fn test_session_is_revoked_if_target_becomes_privileged() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let support = Address::generate(&env);
+        let target_user = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let _ = crate::auth::initialize_admin(&env, &admin);
+        let _ = crate::auth::grant_role(&env, &admin, &support, Role::Support);
+
+        let created = create_session(
+            &env,
+            &support,
+            SessionParams {
+                target_user: target_user.clone(),
+                scope: ImpersonationScope::ReadOnly,
+                resource_scopes: resource_scope(&env, ResourceType::Aid),
+                duration_sec: DEFAULT_SESSION_DURATION,
+                allow_dangerous_mutations: false,
+                reason: Symbol::new(&env, "debug_issue"),
+            },
+        )
+        .unwrap();
+        let _ = crate::auth::grant_role(
+            &env,
+            &admin,
+            &target_user,
+            Role::TreasuryManager,
+        );
+
+        assert_eq!(
+            validate_session(&env, created.session.session_id),
+            Err(ImpersonationError::TargetNotImpersonatable)
+        );
+        assert!(support_access_notice(&env, &target_user).is_none());
+        assert_eq!(crate::audit_ledger::length(&env), 2);
+        assert!(crate::audit_ledger::verify_chain(&env).verified);
     }
 }

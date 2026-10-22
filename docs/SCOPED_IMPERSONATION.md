@@ -21,6 +21,8 @@ The Scoped Maintainer Impersonation feature allows authorized maintainers to tem
 ### 3. Resource-Level Scoping
 - Limit impersonation to specific resource types (AID, Payment, Escrow, Treasury, Roles, Config)
 - Restrict to specific resource IDs for fine-grained control
+- Empty resource scopes and `ResourceType::All` are rejected
+- Read-only and diagnostic sessions cannot include Treasury, Roles, or Config
 - Prevents accidental access to unrelated user data
 
 ### 4. Dangerous Mutation Blocking
@@ -29,10 +31,8 @@ The Scoped Maintainer Impersonation feature allows authorized maintainers to tem
 - Prevents accidental irreversible actions during debugging
 
 ### 5. Comprehensive Audit Logging
-- All impersonation sessions are logged with full context
-- Every action taken during impersonation is recorded
-- Integration with existing timeline and audit trail systems
-- Events emitted for real-time monitoring
+- Session creation, revocation, expiry, and permitted actions are appended to the immutable hash-chained audit ledger
+- Events are also emitted for real-time monitoring
 
 ### 6. Visible Indicators
 - Ledger events for session creation, revocation, and actions
@@ -55,7 +55,13 @@ use trellis_contracts::{
 let params = SessionParams {
     target_user: user_address,
     scope: ImpersonationScope::ReadOnly,
-    resource_scopes: Vec::new(&env),
+    resource_scopes: Vec::from_array(
+        &env,
+        [ResourceScope {
+            resource_type: ResourceType::Aid,
+            resource_id: None,
+        }],
+    ),
     duration_sec: 900, // 15 minutes
     allow_dangerous_mutations: false,
     reason: symbol_short!("debug_user_issue"),
@@ -130,15 +136,9 @@ let params = SessionParams {
 ### Checking Active Impersonation
 
 ```rust
-// Check if a user is currently being impersonated
-if is_being_impersonated(&env, &user_address) {
-    // Get the current session
-    if let Some(session) = get_current_impersonation(&env, &user_address) {
-        println!("User {} is being impersonated by {}", 
-            user_address, session.impersonator);
-        println!("Session scope: {:?}", session.scope);
-        println!("Expires at: {}", session.expires_at);
-    }
+// Show the user-safe notice without exposing internal support details.
+if let Some(notice) = support_access_notice(&env, &user_address) {
+    show_notice_until(notice.expires_at);
 }
 ```
 
@@ -153,23 +153,26 @@ revoke_session(&env, &maintainer_address, session_id)?;
 
 ### Authorization Requirements
 
-To create an impersonation session, the caller must:
+To create an impersonation session, the caller must authenticate and:
 - Hold the `Support` role
 - Be authorized with `Permission::ImpersonateUser`
 
 To revoke a session, the caller must:
+- Authenticate
 - Be the session creator, OR
 - Hold `Permission::ImpersonateUser`
 
+Every recorded action also requires the session creator's authorization.
+
 ### Target User Restrictions
 
-- Admin users cannot be impersonated
-- Target users must not hold sensitive roles (Admin, TreasuryManager, etc.)
+- Accounts holding a privileged or service role (Admin, Upgrader, TreasuryManager, Pauser, ReferralManager, OracleSigner, ServiceActor, or Support) cannot be impersonated
 - Session creation validates target user eligibility
 
 ### Scope Validation
 
-- `ReadOnly` and `Diagnostic` scopes cannot include Treasury or Roles resources
+- `ReadOnly` and `Diagnostic` scopes cannot include Treasury, Roles, or Config resources
+- Empty resource lists and `ResourceType::All` are rejected
 - Resource scopes must be compatible with the chosen permission scope
 - Invalid scope combinations are rejected at session creation
 
@@ -177,7 +180,8 @@ To revoke a session, the caller must:
 
 - Maximum session duration: 1 hour (3600 seconds)
 - Default session duration: 15 minutes (900 seconds)
-- Sessions auto-expire when the ledger timestamp exceeds `expires_at`
+- Zero-duration sessions are rejected. Protected actions are denied at `now >= expires_at`
+- Expired sessions are finalized on the next session validation or when the creator opens another session; no background timer is assumed
 - Expired sessions are automatically cleaned from active indexes
 
 ### Concurrent Session Limits
@@ -186,31 +190,35 @@ To revoke a session, the caller must:
 - Prevents session abuse and helps maintain accountability
 - Attempts to exceed limit return `TooManyActiveSessions` error
 
-## Audit Trail
+## Immutable Audit Trail
 
-### Session Creation Events
+Impersonation lifecycle and action records are appended to the hash-chained
+`shared::audit_ledger` as `PrivilegedAction` events. The module symbols
+`supp_crt`, `supp_rvk`, `supp_exp`, and `supp_act` distinguish creation,
+revocation, expiry, and authorized action attempts. Entries link to the target
+account and session ID; creation records include the chosen scope and expiry,
+and action records include action and resource type. The mutable session
+record is operational state, not the authoritative audit trail.
+
+Every protected handler must validate the session, call
+`check_action_permission`, and call `record_action` before accessing or
+changing the protected resource. `record_action` repeats the session and scope checks and requires the
+impersonator's authorization. It records the authorized attempt before the
+domain operation; the domain operation must still report its own outcome.
+Propagate its result and do not proceed unless it succeeds.
+
+If the immutable audit append fails, the helper returns `AuditFailure` and
+does not update session state. Callers must propagate the error so Soroban
+rolls back the entire invocation; never catch it and continue without a record.
+
+### Event Notifications
 
 ```rust
-// Emitted when a session is created
+// Events are indexer notifications; the hash-chained ledger is authoritative.
 env.events().publish(
     (symbol_short!("impersonation"), symbol_short!("session_created")),
     (session_id, impersonator, target_user, expires_at),
 );
-
-// Logged to action audit trail
-record_action_audit_event(
-    env,
-    impersonator,
-    TimelineEventType::ConfigChanged,
-    &resource_link_for_session(env, session_id),
-    symbol_short!("impersonation"),
-    symbol_short!("create"),
-    Some(reason),
-    Some(target_user),
-    Some(symbol_short!("scope")),
-    Some(i128::from(scope as u8)),
-    Some(i128::from(expires_at)),
-)?;
 ```
 
 ### Action Events
@@ -222,21 +230,25 @@ env.events().publish(
     (session_id, action_type.as_symbol(), resource_type.as_symbol()),
 );
 
-// Logged to action audit trail
-record_action_audit_event(
-    env,
-    impersonator,
-    TimelineEventType::RecordUpdated,
-    &resource_link_for_resource(env, resource_type, resource_id),
-    symbol_short!("impersonation"),
-    symbol_short!("action"),
-    Some(action_type.as_symbol()),
-    Some(target_user),
-    Some(resource_type.as_symbol()),
-    resource_id.map(|id| i128::from(id)),
-    Some(i128::from(action_count)),
-)?;
 ```
+
+### User-Safe Notice
+
+`support_access_notice(env, target_user)` returns only the active session's
+expiry timestamp. It intentionally omits the support actor, internal reason,
+and resource scope so a frontend can display a notice without exposing
+maintainer-only details. It returns `None` when no unexpired session is active.
+
+### Operational Edge Cases and Recovery
+
+| Situation | Behavior and operator response |
+|---|---|
+| A session expires between page loads or transactions | Protected actions revalidate against the current ledger timestamp. Access is denied at `now >= expires_at`; the next validation appends an expiry record and cleans active indexes. |
+| The audit ledger rejects an event (for example, timestamp/ledger regression or sequence overflow) | Fail closed with `AuditFailure`. Inspect `audit_ledger::verify_chain` and the last externally anchored checkpoint before resuming. |
+| A write fails after a required audit append | Propagate the error from the contract entry point. Soroban rolls back the append and related state changes atomically. Confirm the live head before retrying. |
+| A deployment rollback restores an earlier snapshot | Compare the restored head with the latest published/archive checkpoint. If older, pause support access and restore a matching audited snapshot; do not delete or rewrite entries. |
+| An active-session index is stale | Validation checks stored session state and expiry directly, then removes terminated sessions from indexes. Do not repair the audit chain by editing entries. |
+| Audit-chain verification fails | Stop support access operations, preserve affected state and exported entries, and reconcile against a trusted checkpoint/archive. Resume only after restoring a verified snapshot; never truncate or rewrite the chain. |
 
 ### Session Revocation Events
 
@@ -264,6 +276,10 @@ env.events().publish(
 | `SessionAlreadyActive` | Session already active (idempotency check) |
 | `TargetNotImpersonatable` | Target user cannot be impersonated |
 | `TooManyActiveSessions` | Maximum concurrent sessions exceeded |
+| `DurationInvalid` | Duration must be greater than zero |
+| `AuditFailure` | Immutable audit entry could not be appended |
+| `SessionIdExhausted` | No further unique session IDs can be allocated |
+| `TimestampOverflow` | The expiry timestamp cannot be represented |
 
 ## Integration with Existing Systems
 
@@ -271,15 +287,13 @@ env.events().publish(
 
 - Uses existing `Permission::ImpersonateUser` permission
 - Integrates with `Role::Support` for authorization
-- Leverages existing `has_permission()` and `require_permission()` functions
+- Uses `has_permission()` and Soroban `require_auth()` checks
 - Consistent with existing role-based access control
 
-### Timeline and Audit Trail
+### Audit Trail
 
-- Uses existing `record_action_audit_event()` for logging
-- Integrates with `TimelineEventType::ConfigChanged` and `RecordUpdated`
-- Leverages existing `ResourceLink` structure for resource tracking
-- Maintains consistency with existing audit patterns
+- Uses the existing append-only, hash-chained audit ledger
+- Existing user timeline and indexer events remain separate presentation/notification surfaces
 
 ### Event System
 
@@ -315,9 +329,10 @@ env.events().publish(
 ### For Developers
 
 1. **Always check permissions before actions**
-   - Use `check_action_permission()` before any state change
+   - Use `check_action_permission()` before any protected access or state change
    - Handle permission errors gracefully
-   - Record actions even if they fail (for audit trail)
+   - Call `record_action()` and propagate its result before touching protected resources
+   - Do not proceed after an audit failure or a denied action
 
 2. **Validate session before use**
    - Call `validate_session()` to ensure session is still active
@@ -417,11 +432,18 @@ To customize these values for your deployment:
 
 ## Migration and Deployment
 
-### No Database Migration Required
+### Compatibility and Rollout
+
+- `ImpersonationSession` and `SessionParams` storage/API shapes are unchanged.
+- New session creation requires a non-empty, explicit resource scope; `ResourceType::All` is rejected. Update callers to provide scopes and authenticate before rollout.
+- Previously stored sessions with empty or wildcard scopes are denied by the current action check and must be revoked or allowed to expire before recreating them with explicit scopes.
+- `ErrorDomain::SupportAccess` is appended to the error taxonomy. Update client formatters to handle it; existing domain/code values are unchanged.
+- Audit events reuse `AuditEventKind::PrivilegedAction`; the audit-ledger schema and existing event-kind codes do not change.
+
+### Storage Migration
 
 - Uses existing persistent storage patterns
-- No schema changes required
-- Session data stored in new storage keys (no conflicts)
+- No session-storage schema migration is required
 
 ### Role Addition
 
@@ -443,6 +465,13 @@ The `ImpersonateUser` permission is automatically available through the existing
 3. Update monitoring to track impersonation events
 4. Train maintainers on proper impersonation procedures
 5. Review audit trails after initial deployment
+
+### Rollback and Recovery
+
+1. Stop creating support sessions and revoke active sessions while the tightened checks are deployed.
+2. Verify and export the audit ledger, then compare its head with the latest trusted checkpoint.
+3. Do not roll back to a version that accepts empty or wildcard scopes while any such session could remain active; that can restore broad access.
+4. If a contract snapshot must be restored, restore session state and the audit ledger from the same verified snapshot. Reconcile against external checkpoints before resuming support access.
 
 ## Troubleshooting
 
@@ -507,7 +536,7 @@ The `ImpersonateUser` permission is automatically available through the existing
    - Monitor for dangerous actions during impersonation
    - Track action counts per session
 
-4. **Session Expiration**: Auto-expiration not explicitly evented
+4. **Session Expiration**: `impersonation.session_expired`
    - Monitor session duration patterns
    - Alert on sessions running to expiration
 
@@ -515,7 +544,7 @@ The `ImpersonateUser` permission is automatically available through the existing
 
 - **High session creation rate**: May indicate abuse or system issues
 - **Dangerous actions during impersonation**: Requires immediate review
-- **Sessions targeting admin users**: Should never happen
+- **Sessions targeting privileged or service accounts**: Should never happen
 - **Long-running sessions**: May indicate incomplete debugging
 
 ## API Reference
@@ -714,8 +743,8 @@ pub enum ImpersonationAction {
 
 ### Privilege Escalation Prevention
 
-- Admin users cannot be impersonated
-- Users with sensitive roles (TreasuryManager, etc.) cannot be impersonated
+- Privileged and service accounts cannot be impersonated
+- Users with roles such as Upgrader, TreasuryManager, Pauser, ReferralManager, OracleSigner, ServiceActor, or Support cannot be impersonated
 - Role hierarchy is respected during impersonation
 
 ### Data Protection

@@ -2,8 +2,17 @@
 //!
 //! Ensures configuration consistency between testnet, mainnet, and development
 //! environments by tracking version hashes and validating compatibility.
+//!
+//! All parsing operates on canonical byte forms (a `soroban_sdk::String` is
+//! copied into a bounded buffer first), so the module stays `no_std`-clean and
+//! deterministic: the same logical version string always produces the same
+//! compatibility report.
 
 use soroban_sdk::{contracterror, contracttype, BytesN, Env, String, Vec};
+
+/// Longest semantic-version string accepted by the validators. Bounds the
+/// stack buffer used to copy a `String` before parsing.
+const MAX_VERSION_LEN: usize = 32;
 
 /// Configuration version for tracking changes across environments.
 #[contracttype]
@@ -58,81 +67,101 @@ pub enum ConfigVersionError {
     NotFound = 5,
 }
 
-/// Validate semantic version format (major.minor.patch).
-pub fn validate_version_format(version: &String) -> Result<(), ConfigVersionError> {
-    // Basic validation: must contain at least one dot
-    let version_str = version.to_string();
-    if version_str.is_empty() {
-        return Err(ConfigVersionError::InvalidVersionFormat);
-    }
-
-    // Count dots - should have exactly 2 for semver
-    let mut dot_count = 0;
-    let bytes = version_str.as_bytes();
-    for &b in bytes {
-        if b == b'.' {
-            dot_count += 1;
+/// Parses a `major.minor.patch` string into numeric components.
+///
+/// Returns `None` when the input does not have exactly three non-empty,
+/// digit-only components (no leading/trailing/double dots, no overflow).
+fn parse_semver(raw: &[u8]) -> Option<(u32, u32, u32)> {
+    let mut comps = [0u32; 3];
+    let mut idx: usize = 0;
+    let mut cur: u32 = 0;
+    let mut have_digit = false;
+    for &b in raw {
+        match b {
+            b'.' => {
+                if !have_digit || idx >= 2 {
+                    return None;
+                }
+                comps[idx] = cur;
+                idx += 1;
+                cur = 0;
+                have_digit = false;
+            }
+            b'0'..=b'9' => {
+                cur = cur.checked_mul(10)?.checked_add((b - b'0') as u32)?;
+                have_digit = true;
+            }
+            _ => return None,
         }
     }
-
-    if dot_count != 2 {
-        return Err(ConfigVersionError::InvalidVersionFormat);
+    if !have_digit || idx != 2 {
+        return None;
     }
+    comps[2] = cur;
+    Some((comps[0], comps[1], comps[2]))
+}
 
-    Ok(())
+/// Copies a bounded `String` into a reusable buffer; `None` when too long.
+fn string_bytes<'a>(string: &String, buffer: &'a mut [u8; MAX_VERSION_LEN]) -> Option<&'a [u8]> {
+    let len = string.len() as usize;
+    if len == 0 || len > MAX_VERSION_LEN {
+        return None;
+    }
+    string.copy_into_slice(&mut buffer[..len]);
+    Some(&buffer[..len])
+}
+
+/// Validate semantic version format (major.minor.patch).
+pub fn validate_version_format(version: &String) -> Result<(), ConfigVersionError> {
+    let mut buffer = [0u8; MAX_VERSION_LEN];
+    match string_bytes(version, &mut buffer) {
+        Some(bytes) => {
+            if parse_semver(bytes).is_some() {
+                Ok(())
+            } else {
+                Err(ConfigVersionError::InvalidVersionFormat)
+            }
+        }
+        // Empty or over-long version strings are format failures, not
+        // copy failures: callers receive a stable typed error.
+        None => Err(ConfigVersionError::InvalidVersionFormat),
+    }
 }
 
 /// Check if version B is compatible with version A.
 /// Compatible means: same major version, minor version >= A's minor.
-pub fn check_compatibility(
-    env: &Env,
-    version_a: &str,
-    version_b: &str,
-) -> CompatibilityCheck {
+pub fn check_compatibility(env: &Env, version_a: &str, version_b: &str) -> CompatibilityCheck {
     let mut breaking_changes = Vec::new(env);
     let mut warnings = Vec::new(env);
 
-    // Parse versions
-    let parts_a: Vec<&str> = version_a.split('.').collect();
-    let parts_b: Vec<&str> = version_b.split('.').collect();
+    let parsed_a = parse_semver(version_a.as_bytes());
+    let parsed_b = parse_semver(version_b.as_bytes());
 
-    if parts_a.len() != 3 || parts_b.len() != 3 {
+    if let (Some((major_a, minor_a, patch_a)), Some((major_b, minor_b, patch_b))) =
+        (parsed_a, parsed_b)
+    {
+        // A different major version invalidates every stored assumption.
+        if major_a != major_b {
+            breaking_changes.push_back(String::from_str(
+                env,
+                "Major version mismatch - breaking changes expected",
+            ));
+        }
+
+        // A downgrade in the minor version removes previously-added entries.
+        if minor_b < minor_a {
+            breaking_changes.push_back(String::from_str(
+                env,
+                "Minor version downgrade detected",
+            ));
+        }
+
+        // Patch revisions are additive-only downgrades, so just warn.
+        if patch_b < patch_a {
+            warnings.push_back(String::from_str(env, "Patch version downgrade"));
+        }
+    } else {
         breaking_changes.push_back(String::from_str(env, "Invalid version format"));
-        return CompatibilityCheck {
-            is_compatible: false,
-            version_a: String::from_str(env, version_a),
-            version_b: String::from_str(env, version_b),
-            breaking_changes,
-            warnings,
-        };
-    }
-
-    let major_a: u32 = parts_a[0].parse().unwrap_or(0);
-    let major_b: u32 = parts_b[0].parse().unwrap_or(0);
-    let minor_a: u32 = parts_a[1].parse().unwrap_or(0);
-    let minor_b: u32 = parts_b[1].parse().unwrap_or(0);
-
-    // Check major version compatibility
-    if major_a != major_b {
-        breaking_changes.push_back(String::from_str(
-            env,
-            "Major version mismatch - breaking changes expected",
-        ));
-    }
-
-    // Check minor version
-    if minor_b < minor_a {
-        breaking_changes.push_back(String::from_str(
-            env,
-            "Minor version downgrade detected",
-        ));
-    }
-
-    // Check patch version
-    let patch_a: u32 = parts_a[2].parse().unwrap_or(0);
-    let patch_b: u32 = parts_b[2].parse().unwrap_or(0);
-    if patch_b < patch_a {
-        warnings.push_back(String::from_str(env, "Patch version downgrade"));
     }
 
     CompatibilityCheck {
@@ -166,11 +195,17 @@ pub fn compare_versions(
     old_version: &ConfigVersion,
     new_version: &ConfigVersion,
 ) -> CompatibilityCheck {
-    check_compatibility(
-        env,
-        &old_version.version.to_string(),
-        &new_version.version.to_string(),
-    )
+    // Registry version strings are bounded, so the copies always fit; over-long
+    // or empty strings degrade to "" and surface as `Invalid version format`.
+    let mut buf_a = [0u8; MAX_VERSION_LEN];
+    let mut buf_b = [0u8; MAX_VERSION_LEN];
+    let old_raw = string_bytes(&old_version.version, &mut buf_a)
+        .and_then(|b| core::str::from_utf8(b).ok())
+        .unwrap_or("");
+    let new_raw = string_bytes(&new_version.version, &mut buf_b)
+        .and_then(|b| core::str::from_utf8(b).ok())
+        .unwrap_or("");
+    check_compatibility(env, old_raw, new_raw)
 }
 
 #[cfg(test)]
@@ -189,6 +224,12 @@ mod tests {
 
         let empty = String::from_str(&env, "");
         assert!(validate_version_format(&empty).is_err());
+
+        let double_dot = String::from_str(&env, "1..2");
+        assert!(validate_version_format(&double_dot).is_err());
+
+        let trailing = String::from_str(&env, "1.2.");
+        assert!(validate_version_format(&trailing).is_err());
     }
 
     #[test]
@@ -206,5 +247,58 @@ mod tests {
         // Minor downgrade
         let result = check_compatibility(&env, "1.3.0", "1.2.0");
         assert!(!result.is_compatible);
+
+        // Patch downgrade only warns
+        let result = check_compatibility(&env, "1.2.5", "1.2.4");
+        assert!(result.is_compatible);
+        assert_eq!(result.warnings.len(), 1);
+
+        // Malformed input reports one breaking change
+        let result = check_compatibility(&env, "1.2.3", "not-a-version");
+        assert!(!result.is_compatible);
+    }
+
+    #[test]
+    fn test_compare_versions_from_registry() {
+        let env = Env::default();
+        let old_version = ConfigVersion {
+            version: String::from_str(&env, "1.4.0"),
+            content_hash: BytesN::from_array(&env, &[0u8; 32]),
+            environment: Environment::Testnet,
+            created_at: 100,
+            is_approved: true,
+        };
+        let new_version = ConfigVersion {
+            version: String::from_str(&env, "1.5.0"),
+            content_hash: BytesN::from_array(&env, &[1u8; 32]),
+            environment: Environment::Testnet,
+            created_at: 200,
+            is_approved: false,
+        };
+
+        let report = compare_versions(&env, &old_version, &new_version);
+        assert!(report.is_compatible);
+        assert_eq!(report.version_a, String::from_str(&env, "1.4.0"));
+    }
+
+    #[test]
+    fn test_validate_deployment_approval() {
+        let env = Env::default();
+        let config = ConfigVersion {
+            version: String::from_str(&env, "1.0.0"),
+            content_hash: BytesN::from_array(&env, &[0u8; 32]),
+            environment: Environment::Testnet,
+            created_at: 0,
+            is_approved: true,
+        };
+
+        assert!(validate_deployment_approval(&config, Environment::Testnet).is_ok());
+        assert!(validate_deployment_approval(&config, Environment::Mainnet).is_err());
+
+        let unapproved = ConfigVersion {
+            is_approved: false,
+            ..config
+        };
+        assert!(validate_deployment_approval(&unapproved, Environment::Testnet).is_err());
     }
 }

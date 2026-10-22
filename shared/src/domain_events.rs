@@ -6,7 +6,7 @@
 //! fall back to an older compatible version without guessing from payload
 //! shape.
 
-use soroban_sdk::{contracttype, Env, Map, IntoVal, Symbol, Val, Vec};
+use soroban_sdk::{contracttype, Env, Map, Symbol, Val, Vec};
 
 /// A versioned event schema.  `required_fields` is the exact allow-list for a
 /// payload, so producers cannot silently publish misspelled or undocumented
@@ -92,7 +92,7 @@ pub fn consumer_version(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{symbol_short, Env};
+    use soroban_sdk::{symbol_short, Env, IntoVal};
 
     fn schema(env: &Env) -> EventSchema {
         let mut fields = Vec::new(env);

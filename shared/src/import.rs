@@ -40,7 +40,7 @@ use soroban_sdk::{
 
 pub use crate::migration::RollbackStrategy;
 use crate::storage::{
-    instance_get, instance_set, persistent_has, persistent_read, persistent_set,
+    instance_get, instance_set, persistent_get, persistent_has, persistent_read, persistent_set,
     temporary_has, temporary_remove, temporary_set,
 };
 
@@ -311,4 +311,441 @@ pub fn validate_config(config: &ImportConfig) -> Result<(), ImportError> {
         return Err(ImportError::InvalidConfig);
     }
     Ok(())
+}
+
+// ----------------------------------------------------------------------------
+// Row Validation
+// ----------------------------------------------------------------------------
+
+/// Validates the fields of a single row against the pipeline constraints.
+///
+/// On failure the stable numeric error code and a short reason symbol are
+/// returned so the caller can surface them in [`RowError`] and
+/// [`QuarantinedRow`] entries.
+fn validate_item(_env: &Env, item: &ImportItem, current_time: u64) -> Result<(), (u32, Symbol)> {
+    if item.amount <= 0 {
+        return Err((ImportError::InvalidAmount as u32, symbol_short!("zero_amt")));
+    }
+    if item.expiry <= current_time {
+        return Err((ImportError::ExpiredRecord as u32, symbol_short!("expired")));
+    }
+    if let Some(ext_id) = &item.external_id {
+        if ext_id.is_empty() || ext_id.len() > MAX_EXTERNAL_ID_LEN {
+            return Err((ImportError::ExternalIdTooLong as u32, symbol_short!("bad_id")));
+        }
+    }
+    Ok(())
+}
+
+// ----------------------------------------------------------------------------
+// Rollback Guidance
+// ----------------------------------------------------------------------------
+
+/// Computes the operator-facing rollback and remediation guidance.
+///
+/// | Situation | `strategy` | `action` | Runbook |
+/// |-----------|------------|----------|---------|
+/// | No row failed | `Manual` | `no_action` | `clean` |
+/// | Dry-run preview with failures | `ForwardFix` | `fix_rows` | `dry_err` |
+/// | Atomic batch aborted | `Revert` | `reverted` | `atom_rev` |
+/// | Best-effort batch with failures | `ForwardFix` | `part_fix` | `part_rem` |
+pub fn generate_rollback_guidance(
+    is_dry_run: bool,
+    mode: ImportMode,
+    total_rows: u32,
+    error_count: u32,
+    _create_count: u32,
+    _update_count: u32,
+) -> RollbackGuidance {
+    if error_count == 0 {
+        return RollbackGuidance {
+            strategy: RollbackStrategy::Manual,
+            action: symbol_short!("no_action"),
+            affected_records: 0,
+            runbook_code: symbol_short!("clean"),
+        };
+    }
+
+    if is_dry_run {
+        return RollbackGuidance {
+            strategy: RollbackStrategy::ForwardFix,
+            action: symbol_short!("fix_rows"),
+            affected_records: error_count,
+            runbook_code: symbol_short!("dry_err"),
+        };
+    }
+
+    match mode {
+        ImportMode::AllOrNothing => RollbackGuidance {
+            strategy: RollbackStrategy::Revert,
+            action: symbol_short!("reverted"),
+            affected_records: total_rows,
+            runbook_code: symbol_short!("atom_rev"),
+        },
+        ImportMode::BestEffort => RollbackGuidance {
+            strategy: RollbackStrategy::ForwardFix,
+            action: symbol_short!("part_fix"),
+            affected_records: error_count,
+            runbook_code: symbol_short!("part_rem"),
+        },
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Pipeline Internals
+// ----------------------------------------------------------------------------
+
+/// Aggregated outcome of a single pass over an import batch.
+struct BatchOutcome {
+    /// Number of rows that create a new record.
+    create_count: u32,
+    /// Number of rows that update an existing record.
+    update_count: u32,
+    /// Number of rows skipped by the duplicate policy.
+    skip_count: u32,
+    /// Number of rows that failed validation or duplicate detection.
+    error_count: u32,
+    /// Row-level error diagnostics.
+    errors: Vec<RowError>,
+    /// Rows quarantined for operator review.
+    quarantined: Vec<QuarantinedRow>,
+}
+
+/// Records a row failure in both the error list and the quarantine list.
+///
+/// The quarantine list is capped at [`MAX_QUARANTINE_ROWS`] so a large batch
+/// cannot bloat the report beyond the operator review budget.
+fn record_row_failure(
+    _env: &Env,
+    outcome: &mut BatchOutcome,
+    item: &ImportItem,
+    error_code: u32,
+    reason: Symbol,
+) {
+    outcome.error_count += 1;
+    outcome.errors.push_back(RowError {
+        row_id: item.row_id,
+        external_id: item.external_id.clone(),
+        error_code,
+        reason: reason.clone(),
+    });
+    if outcome.quarantined.len() < MAX_QUARANTINE_ROWS {
+        outcome.quarantined.push_back(QuarantinedRow {
+            row_id: item.row_id,
+            external_id: item.external_id.clone(),
+            error_code,
+            reason,
+        });
+    }
+}
+
+/// Runs one pass over the batch, optionally persisting the accepted rows.
+///
+/// When `commit` is `false` the pass is a pure preview: it only reads
+/// persistent storage (never writing, never bumping a TTL) and accumulates the
+/// in-memory duplicate map. When `commit` is `true` the accepted rows are
+/// written to persistent storage and the import counter is advanced.
+fn run_pipeline(
+    env: &Env,
+    items: &Vec<ImportItem>,
+    config: &ImportConfig,
+    commit: bool,
+) -> BatchOutcome {
+    let current_time = env.ledger().timestamp();
+
+    let mut outcome = BatchOutcome {
+        create_count: 0,
+        update_count: 0,
+        skip_count: 0,
+        error_count: 0,
+        errors: Vec::new(env),
+        quarantined: Vec::new(env),
+    };
+
+    // In-memory set for tracking duplicates within this batch.
+    // Maps external_id -> occurrence count.
+    let mut seen_in_batch: Map<Bytes, u32> = Map::new(env);
+    let mut counter: u64 = instance_get(env, &IMPORT_COUNTER_KEY).unwrap_or(0);
+
+    for item in items.iter() {
+        // 1. Validate row fields.
+        if let Err((code, reason)) = validate_item(env, &item, current_time) {
+            record_row_failure(env, &mut outcome, &item, code, reason);
+            continue;
+        }
+
+        // 2. Duplicate detection and persistence.
+        let ext_id = match &item.external_id {
+            Some(ext_id) => ext_id,
+            // Rows without an external ID are anonymous creates.
+            None => {
+                outcome.create_count += 1;
+                if commit {
+                    counter += 1;
+                }
+                continue;
+            }
+        };
+
+        let key = external_record_key(ext_id);
+        let in_batch_count = seen_in_batch.get(ext_id.clone()).unwrap_or(0);
+        let existing: Option<StoredImportRecord> = persistent_read(env, &key);
+
+        if in_batch_count > 0 || existing.is_some() {
+            match config.duplicate_policy {
+                DuplicatePolicy::SkipExisting => {
+                    outcome.skip_count += 1;
+                }
+                DuplicatePolicy::UpdateExisting => {
+                    outcome.update_count += 1;
+                    if commit {
+                        let record_id = match &existing {
+                            Some(record) => record.record_id,
+                            None => {
+                                counter += 1;
+                                counter
+                            }
+                        };
+                        let record = StoredImportRecord {
+                            record_id,
+                            external_id: ext_id.clone(),
+                            recipient: item.recipient.clone(),
+                            amount: item.amount,
+                            expiry: item.expiry,
+                            metadata_hash: item.metadata_hash.clone(),
+                            imported_at: current_time,
+                            version: 1,
+                        };
+                        persistent_set(env, &key, &record);
+                    }
+                }
+                DuplicatePolicy::RejectDuplicate => {
+                    let reason = if in_batch_count > 0 {
+                        symbol_short!("dup_batch")
+                    } else {
+                        symbol_short!("dup_store")
+                    };
+                    record_row_failure(
+                        env,
+                        &mut outcome,
+                        &item,
+                        ImportError::DuplicateExternalId as u32,
+                        reason,
+                    );
+                }
+            }
+        } else {
+            outcome.create_count += 1;
+            if commit {
+                counter += 1;
+                let record = StoredImportRecord {
+                    record_id: counter,
+                    external_id: ext_id.clone(),
+                    recipient: item.recipient.clone(),
+                    amount: item.amount,
+                    expiry: item.expiry,
+                    metadata_hash: item.metadata_hash.clone(),
+                    imported_at: current_time,
+                    version: 1,
+                };
+                persistent_set(env, &key, &record);
+            }
+        }
+
+        seen_in_batch.set(ext_id.clone(), in_batch_count + 1);
+    }
+
+    if commit {
+        instance_set(env, &IMPORT_COUNTER_KEY, &counter);
+    }
+
+    outcome
+}
+
+// ----------------------------------------------------------------------------
+// Dry Run Simulation
+// ----------------------------------------------------------------------------
+
+/// Performs a dry-run validation of the import batch.
+///
+/// **Safety guarantee**: performs **ZERO persistent writes**. All duplicate
+/// checking and preview calculations use read-only lookups and in-memory
+/// tracking. The import counter and every stored record are left untouched.
+///
+/// Rows that fail validation — or that are rejected as duplicates under
+/// [`DuplicatePolicy::RejectDuplicate`] — are reported in
+/// [`ImportReport::errors`] and quarantined in
+/// [`ImportReport::quarantined`] for operator review.
+pub fn dry_run(
+    env: &Env,
+    items: &Vec<ImportItem>,
+    config: &ImportConfig,
+) -> Result<ImportReport, ImportError> {
+    validate_config(config)?;
+    let total_rows = items.len();
+    if total_rows == 0 {
+        return Err(ImportError::EmptyBatch);
+    }
+    if total_rows > config.max_rows {
+        return Err(ImportError::BatchTooLarge);
+    }
+
+    let fingerprint = compute_batch_fingerprint(env, items);
+    let outcome = run_pipeline(env, items, config, false);
+
+    let rollback_guidance = generate_rollback_guidance(
+        true,
+        config.mode,
+        total_rows,
+        outcome.error_count,
+        outcome.create_count,
+        outcome.update_count,
+    );
+
+    crate::events::emit_import_simulated(
+        env,
+        total_rows,
+        outcome.create_count,
+        outcome.update_count,
+        outcome.skip_count,
+        outcome.error_count,
+        &fingerprint,
+    );
+
+    Ok(ImportReport {
+        is_dry_run: true,
+        total_rows,
+        create_count: outcome.create_count,
+        update_count: outcome.update_count,
+        skip_count: outcome.skip_count,
+        error_count: outcome.error_count,
+        errors: outcome.errors,
+        rollback_guidance,
+        quarantined: outcome.quarantined,
+        batch_fingerprint: fingerprint,
+    })
+}
+
+// ----------------------------------------------------------------------------
+// Execute Import
+// ----------------------------------------------------------------------------
+
+/// Executes an import batch against persistent storage with full guardrails.
+///
+/// * [`ImportMode::AllOrNothing`] validates the whole batch before touching
+///   persistent storage; a single invalid row aborts the batch with
+///   [`ImportError::InvalidRow`] and nothing is written.
+/// * [`ImportMode::BestEffort`] commits the valid rows and reports the
+///   rejected ones in [`ImportReport::errors`] /
+///   [`ImportReport::quarantined`].
+/// * A reentrant invocation is rejected with [`ImportError::ReentrancyDetected`].
+///
+/// The returned [`ImportReport::batch_fingerprint`] identifies the committed
+/// batch; it is also stored as the rollback anchor for the operator runbook.
+pub fn execute_import(
+    env: &Env,
+    caller: &Address,
+    items: &Vec<ImportItem>,
+    config: &ImportConfig,
+) -> Result<ImportReport, ImportError> {
+    // A dry-run configuration never writes; route it to the preview path.
+    if config.dry_run {
+        return dry_run(env, items, config);
+    }
+
+    validate_config(config)?;
+    let total_rows = items.len();
+    if total_rows == 0 {
+        return Err(ImportError::EmptyBatch);
+    }
+    if total_rows > config.max_rows {
+        return Err(ImportError::BatchTooLarge);
+    }
+
+    acquire_reentrancy_guard(env)?;
+
+    let fingerprint = compute_batch_fingerprint(env, items);
+
+    // Atomic mode: validate the whole batch before any persistent write so a
+    // single invalid row leaves the ledger state untouched.
+    if config.mode == ImportMode::AllOrNothing {
+        let preview = run_pipeline(env, items, config, false);
+        if preview.error_count > 0 {
+            release_reentrancy_guard(env);
+            crate::events::emit_import_failed(
+                env,
+                caller,
+                total_rows,
+                preview.error_count,
+                ImportError::InvalidRow as u32,
+            );
+            return Err(ImportError::InvalidRow);
+        }
+    }
+
+    let outcome = run_pipeline(env, items, config, true);
+
+    // Rollback anchor: remember the batch that was just committed so the
+    // operator runbook can locate the affected rows later.
+    let committed_records = outcome.create_count + outcome.update_count;
+    let marker_key = batch_marker_key(&fingerprint);
+    if !persistent_has(env, &marker_key) {
+        persistent_set(env, &marker_key, &committed_records);
+    }
+    instance_set(env, &LAST_BATCH_KEY, &fingerprint);
+    instance_set(env, &LAST_BATCH_COUNT_KEY, &committed_records);
+
+    release_reentrancy_guard(env);
+
+    let rollback_guidance = generate_rollback_guidance(
+        false,
+        config.mode,
+        total_rows,
+        outcome.error_count,
+        outcome.create_count,
+        outcome.update_count,
+    );
+
+    crate::events::emit_import_committed(
+        env,
+        caller,
+        total_rows,
+        outcome.create_count,
+        outcome.update_count,
+        outcome.skip_count,
+        outcome.error_count,
+        &fingerprint,
+    );
+
+    Ok(ImportReport {
+        is_dry_run: false,
+        total_rows,
+        create_count: outcome.create_count,
+        update_count: outcome.update_count,
+        skip_count: outcome.skip_count,
+        error_count: outcome.error_count,
+        errors: outcome.errors,
+        rollback_guidance,
+        quarantined: outcome.quarantined,
+        batch_fingerprint: fingerprint,
+    })
+}
+
+// ----------------------------------------------------------------------------
+// Query Helpers
+// ----------------------------------------------------------------------------
+
+/// Fetches a stored import record by its external identifier.
+pub fn get_imported_record(env: &Env, external_id: &Bytes) -> Option<StoredImportRecord> {
+    persistent_get(env, &external_record_key(external_id))
+}
+
+/// Checks whether an external identifier has already been imported.
+pub fn has_imported_record(env: &Env, external_id: &Bytes) -> bool {
+    persistent_has(env, &external_record_key(external_id))
+}
+
+/// Returns the number of import records committed so far.
+pub fn get_import_counter(env: &Env) -> u64 {
+    instance_get(env, &IMPORT_COUNTER_KEY).unwrap_or(0)
 }

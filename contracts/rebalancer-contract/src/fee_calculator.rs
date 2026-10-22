@@ -22,7 +22,7 @@ pub fn fee_for_amount(amount: u128, fee_bps: u32) -> Option<u128> {
 }
 
 pub fn calculate_total_fees(trades: &Vec<Trade>) -> u128 {
-    let mut total_fees = 0;
+    let mut total_fees: u128 = 0;
     for trade in trades.iter() {
         let fee =
             fee_for_amount(trade.amount, DEFAULT_FEE_BPS).expect("the default fee rate is valid");

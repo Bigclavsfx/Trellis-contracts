@@ -1,3 +1,4 @@
+use crate::capacity_allows;
 use crate::fee_calculator::{fee_for_amount, DEFAULT_FEE_BPS};
 use crate::logging::log_trade;
 use crate::slippage_predictor::predict_slippage;

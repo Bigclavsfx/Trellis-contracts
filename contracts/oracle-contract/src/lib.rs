@@ -33,7 +33,9 @@ mod events;
 mod storage;
 mod types;
 
-use soroban_sdk::{contract, contractimpl, symbol_short, token, Address, Bytes, Env, Symbol};
+use soroban_sdk::{
+    contract, contractimpl, symbol_short, token, Address, Bytes, BytesN, Env, Symbol, Vec,
+};
 
 use errors::OracleError;
 use shared::events::emit_module_initialized;
@@ -43,6 +45,15 @@ use types::{FeedLatest, PriceSubmission};
 
 const MAX_FUTURE_SKEW_SECS: u64 = 60;
 const DEFAULT_MIN_PRICE_QUORUM: u32 = 2;
+
+/// Correlation ID used for the contract-level events.
+///
+/// The oracle contract does not accept a caller-supplied correlation ID (the
+/// contract entrypoints keep a stable signature), so the canonical zero ID is
+/// used, matching the pattern used by the other contracts in this workspace.
+fn zero_correlation_id(env: &Env) -> BytesN<32> {
+    BytesN::from_array(env, &[0; 32])
+}
 
 #[cfg(test)]
 mod tests;
@@ -61,6 +72,7 @@ impl OracleContract {
         storage::set_min_price_quorum(&env, DEFAULT_MIN_PRICE_QUORUM);
         emit_module_initialized(
             &env,
+            &zero_correlation_id(&env),
             symbol_short!("oracle"),
             1,
             &admin,
@@ -456,9 +468,14 @@ impl OracleContract {
         penalty_amount: i128,
         reason: Symbol,
     ) -> Result<(), OracleError> {
-        if !shared::auth::has_admin_authority(&env, &caller)
-            && !shared::auth::has_permission(&env, &caller, shared::auth::Permission::ManageConfiguration)
-        {
+        // Governance authority: the contract admin or any holder of the
+        // admin role. `has_permission(ManageConfiguration)` resolves to the
+        // admin role *or* the stored admin address.
+        if !shared::auth::has_permission(
+            &env,
+            &caller,
+            shared::auth::Permission::ManageConfiguration,
+        ) {
             return Err(OracleError::Unauthorized);
         }
         caller.require_auth();

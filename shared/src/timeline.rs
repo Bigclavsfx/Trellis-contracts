@@ -384,7 +384,7 @@ pub fn scheduled_window(env: &Env, action_id: u64) -> Option<TimeWindow> {
 pub fn validate_scheduled_action(
     env: &Env,
     action_id: u64,
-    link: &ResourceLink,
+    _link: &ResourceLink,
 ) -> Result<TimeWindow, Error> {
     let window = scheduled_window(env, action_id).ok_or(Error::NotFound)?;
     if !window.is_well_formed() {

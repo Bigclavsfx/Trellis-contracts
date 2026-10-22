@@ -536,7 +536,11 @@ fn test_threat_emergency_withdraw_is_conservation_observable() {
     let before = fx.capture_snapshot(&categories);
 
     // Pause, then perform an emergency withdrawal to the admin.
-    fx.client.pause(&fx.admin);
+    // The treasury contract has no `pause` entry point; the shared paused flag
+    // is set from inside the contract's own storage context, the same way an
+    // operator would.
+    fx.env
+        .as_contract(&fx.contract_id, || shared::storage::set_paused(&fx.env, true));
     let res = fx.client.try_emergency_withdraw(
         &fx.admin,
         &fx.token_addr,
@@ -555,8 +559,8 @@ fn test_threat_emergency_withdraw_is_conservation_observable() {
         before.get_balance(&fx.admin).unwrap() + 10_000
     );
     assert_eq!(
-        after.contract_reserve,
-        before.contract_reserve - 10_000
+        after.contract_token_reserve,
+        before.contract_token_reserve - 10_000
     );
 }
 

@@ -25,7 +25,7 @@ use soroban_sdk::{
     contracterror, contracttype, symbol_short, Env, Symbol, Vec,
 };
 
-use crate::storage::{instance_get, instance_has, instance_remove, instance_set};
+use crate::storage::{instance_get, instance_remove, instance_set};
 
 // ---------------------------------------------------------------------------
 // Error Taxonomy (Range 940–949)

@@ -69,7 +69,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, vec, Address, Env, IntoVal, Symbol,
+    contract, contractimpl, contracttype, symbol_short, vec, Address, BytesN, Env, IntoVal, Symbol,
 };
 
 use shared::auth::{self, Role};
@@ -220,6 +220,13 @@ pub struct Proposal {
 #[contract]
 pub struct GovernanceContract;
 
+/// The governance contract does not accept a caller-supplied correlation ID
+/// (proposals are not tied to a request-scoped workflow), so every correlated
+/// event uses the canonical zero correlation ID.
+fn zero_correlation_id(env: &Env) -> BytesN<32> {
+    BytesN::from_array(env, &[0; 32])
+}
+
 #[contractimpl]
 impl GovernanceContract {
     /// Initialise the contract: sets the admin address, seeds parameter
@@ -269,6 +276,7 @@ impl GovernanceContract {
         seed_defaults(&env);
         emit_module_initialized(
             &env,
+            &zero_correlation_id(&env),
             symbol_short!("gov"),
             1,
             &admin,
@@ -294,6 +302,7 @@ impl GovernanceContract {
         );
         events::emit_role_granted(
             &env,
+            &zero_correlation_id(&env),
             &caller,
             &user,
             role_name(&role),
@@ -311,6 +320,7 @@ impl GovernanceContract {
         );
         events::emit_role_revoked(
             &env,
+            &zero_correlation_id(&env),
             &caller,
             &user,
             role_name(&role),
@@ -439,6 +449,7 @@ impl GovernanceContract {
 
         events::emit_proposal_created(
             &env,
+            &zero_correlation_id(&env),
             new_id,
             &caller,
             action_symbol(&action),
@@ -487,6 +498,7 @@ impl GovernanceContract {
 
         events::emit_proposal_approved(
             &env,
+            &zero_correlation_id(&env),
             proposal_id,
             &caller,
             proposal.approval_count,
@@ -548,6 +560,7 @@ impl GovernanceContract {
 
         events::emit_proposal_executed(
             &env,
+            &zero_correlation_id(&env),
             proposal_id,
             &caller,
             proposal.approval_count,
@@ -615,6 +628,7 @@ impl GovernanceContract {
         );
         emit_action_executed(
             &env,
+            &zero_correlation_id(&env),
             symbol_short!("gov"),
             symbol_short!("set_param"),
             &caller,
@@ -838,6 +852,7 @@ fn role_name(role: &Role) -> Symbol {
         Role::OracleSigner => symbol_short!("oracle_s"),
         Role::EndUser => symbol_short!("end_user"),
         Role::ServiceActor => symbol_short!("svc_actor"),
+        Role::Support => symbol_short!("support"),
     }
 }
 

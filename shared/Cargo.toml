@@ -13,6 +13,10 @@ soroban-sdk = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+# Test-only: signs the intent digest so the approval flow can be exercised
+# with real Ed25519 signatures. Dev-dependencies are never compiled into the
+# contract wasm, so this does not affect the on-chain size budget.
+ed25519-dalek = { workspace = true }
 
 [features]
 default = []

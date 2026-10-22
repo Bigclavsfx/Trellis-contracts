@@ -30,7 +30,8 @@ use shared::events::{emit_action_executed, emit_module_initialized};
 use shared::storage::{persistent_get, persistent_read, persistent_set};
 use shared::{auth, errors::Error};
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Bytes, Env, Map, Symbol, Vec,
+    contract, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env, Map, Symbol,
+    Vec,
 };
 
 // Storage keys
@@ -95,6 +96,13 @@ pub struct DeactivationState {
 #[contract]
 pub struct RegistryContract;
 
+/// The registry contract does not accept a caller-supplied correlation ID
+/// (registration is not tied to a request-scoped workflow), so every
+/// correlated event uses the canonical zero correlation ID.
+fn zero_correlation_id(env: &Env) -> BytesN<32> {
+    BytesN::from_array(env, &[0; 32])
+}
+
 #[contractimpl]
 impl RegistryContract {
     // ─── Initialization ──────────────────────────────────────────────────────
@@ -104,6 +112,7 @@ impl RegistryContract {
         auth::initialize_admin(&env, &admin)?;
         emit_module_initialized(
             &env,
+            &zero_correlation_id(&env),
             symbol_short!("registry"),
             1,
             &admin,
@@ -167,6 +176,7 @@ impl RegistryContract {
 
         emit_action_executed(
             &env,
+            &zero_correlation_id(&env),
             symbol_short!("registry"),
             symbol_short!("set_ctr"),
             &caller,
@@ -224,6 +234,7 @@ impl RegistryContract {
 
         emit_action_executed(
             &env,
+            &zero_correlation_id(&env),
             symbol_short!("registry"),
             symbol_short!("deact"),
             &caller,
@@ -259,6 +270,7 @@ impl RegistryContract {
 
         emit_action_executed(
             &env,
+            &zero_correlation_id(&env),
             symbol_short!("registry"),
             symbol_short!("react"),
             &caller,

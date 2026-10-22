@@ -38,6 +38,7 @@ pub mod invariants;
 pub mod jobs;
 pub mod lifecycle;
 pub mod lifecycle_events;
+pub mod maintainer_approval;
 pub mod math;
 pub mod migration;
 pub mod operational_metadata;
@@ -47,6 +48,7 @@ pub mod payments;
 pub mod policy;
 pub mod policy_preview;
 pub mod preflight;
+pub mod problem_details;
 pub mod public_status;
 pub mod projection_repair;
 pub mod protocol_changelog;
@@ -108,9 +110,6 @@ dry_run as dry_run_backfill, fail_backfill, is_resumable as is_backfill_resumabl
 load_checkpoint as load_backfill_checkpoint, resume_backfill,
 save_checkpoint as save_backfill_checkpoint,
 BackfillAction, BackfillCheckpoint, BackfillDuplicatePolicy, BackfillError,
-advance_checkpoint, begin_backfill, clear_checkpoint, complete_backfill, dry_run as dry_run_backfill,
-fail_backfill, is_resumable as is_backfill_resumable, load_checkpoint as load_backfill_checkpoint,
-save_checkpoint as save_backfill_checkpoint, BackfillAction, BackfillCheckpoint, BackfillError,
 BackfillItem, BackfillMode, BackfillModule, BackfillPlan, BackfillReport, BackfillStatus,
 };
 pub use batch::{
@@ -187,17 +186,13 @@ IMPORT_COMMITTED, IMPORT_FAILED, IMPORT_SIMULATED, PARAMETER_CHANGED, PAYMENT_ES
 PAYMENT_ESCROW_REFUNDED, PAYMENT_ESCROW_RELEASED, PAYMENT_FEE, PAYMENT_TRANSFER,
 REFERRAL_ACCRUED, REFERRAL_REGISTERED, REFERRER_SET, TIER_CONFIG_SET, TREASURY_DEPOSIT,
 TREASURY_EMERGENCY_WITHDRAW, TREASURY_SET, TREASURY_WITHDRAW,
+};
 pub use event_dead_letter::{
     dead_letter_ids as event_dead_letter_ids, discard_dead_letter as discard_event_dead_letter,
     dispatch_event, get_dead_letter as get_event_dead_letter, pending_dead_letter_ids,
     requeue_dead_letter as requeue_event_dead_letter, retry_dead_letter, DispatchOutcome,
     DomainEventHandler, EventDeadLetter, EventDispatchStatus, EVENT_DLQ_DEAD_LETTERED,
     EVENT_DLQ_REQUEUED, EVENT_DLQ_RESOLVED, EVENT_DLQ_RETRIED, EVENT_DLQ_TOPIC,
-};
-pub use events::{
-emit, emit_collection_registered, emit_import_committed, emit_import_failed,
-emit_import_simulated, emit_nft_auction, emit_nft_bid, emit_nft_listed, emit_nft_offer,
-emit_nft_settle, emit_nft_sold, emit_royalty_paid,
 };
 pub use evidence::*;
 pub use chaos::*;
@@ -220,7 +215,6 @@ ImpersonationSession, ResourceScope, ResourceType, SessionParams, SessionResult,
 DEFAULT_SESSION_DURATION, MAX_CONCURRENT_SESSIONS, MAX_SESSION_DURATION,
 };
 pub use import::{
-compute_batch_fingerprint,
 compute_batch_fingerprint, dry_run as dry_run_import, execute_import,
 generate_rollback_guidance, get_import_counter, get_imported_record, has_imported_record,
 validate_config as validate_import_config, DuplicatePolicy, ImportConfig, ImportError,
@@ -247,6 +241,20 @@ assert_lifecycle_sequence, emit_aid_event, emit_contract_record_event, emit_escr
 emit_lifecycle_transition, emit_proposal_event, emit_resource_transition, LifecycleEvent,
 LifecycleResource, LifecycleTransition, LIFECYCLE_EVENT_SCHEMA_VERSION, LIFECYCLE_TOPIC,
 STATE_NONE,
+};
+pub use maintainer_approval::{
+    approve_intent, begin_execution, cancel_intent, default_policy as default_approval_policy,
+    export_receipts, get_approvals, get_intent, get_policy, get_receipt as get_intent_receipt,
+    intent_hash, intent_message, is_high_impact, is_maintainer as is_registered_maintainer,
+    key_owner, list_intents, list_receipts, maintainer_key, params_digest, pending_intents,
+    propose_intent, receipt_count, receipt_head, record_failure, record_success,
+    register_maintainer, reject_intent, revoke_maintainer, set_action_impact, set_policy,
+    sweep_expired, verify_export as verify_receipt_export, verify_receipts, ActionIntent, Approval,
+    ApprovalError, ApprovalPolicy, IntentReceipt, IntentStatus, ReceiptExportBundle, ReceiptHead,
+    ReceiptOutcome, ReceiptVerificationFailure, ReceiptVerificationReport, APPROVAL_DOMAIN,
+    DEFAULT_APPROVAL_THRESHOLD, DEFAULT_INTENT_TTL_LEDGERS, MAX_APPROVALS_PER_INTENT,
+    MAX_INTENT_PARAMS, MAX_INTENT_TTL_LEDGERS, MAX_RECEIPT_PAGE_LIMIT, MAX_VERIFY_RECEIPTS,
+    MAINTAINER_APPROVAL_SCHEMA_VERSION, RECEIPT_DOMAIN,
 };
 pub use migration::{
 begin_migration, clear_journal, dry_run, evaluate_post_checks, expected_step, fail_migration,
@@ -474,3 +482,6 @@ mod test_ledger_fixtures;
 // Schema-compatibility tests for versioned domain events (Issue #337).
 #[cfg(test)]
 mod test_domain_events;
+// Maintainer action approval flow with signed intent receipts (Issue #228).
+#[cfg(test)]
+mod test_maintainer_approval;

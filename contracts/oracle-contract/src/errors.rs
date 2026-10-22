@@ -1,4 +1,4 @@
-use soroban_contracterror;
+use soroban_sdk::contracterror;
 
 /// Oracle-specific error codes (range 500-599 per shared conventions).
 ///
@@ -36,8 +36,8 @@ use soroban_contracterror;
 /// See `docs/oracle-errors.md` for the human-readable taxonomy table.
 /// The table is generated from `describe()` and verified by tests in
 /// `tests/error_taxonomy.rs`.
-#contracterror
-#[derive(Copy, Clone, Debug, Eq, PartialE, PartialOrd, Ord)]
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum OracleError {
     /// The submitter is not registered or not active.
@@ -82,6 +82,8 @@ pub enum OracleError {
     AlreadyUnbonding = 519,
     /// Math overflow occurred.
     Overflow = 520,
+    /// The submission timestamp is too far in the future.
+    SubmissionFromFuture = 521,
 }
 
 /// Stable machine code for an `OracleError`.
@@ -89,6 +91,7 @@ pub enum OracleError {
 /// This is the value clients should match on. It is derived from the
 /// contracterror representation and is guaranteed to remain stable across versions
 /// for a given variant.
+#[allow(dead_code)]
 pub fn machine_code(error: OracleError) -> u32 {
     error as u32
 }
@@ -96,8 +99,8 @@ pub fn machine_code(error: OracleError) -> u32 {
 /// Severity class for an oracle error.
 ///
 /// Used by clients to decide retry strategy and alerting.
+#[allow(dead_code)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#repr(u32)]
 pub enum Severity {
     /// Retry after correcting input or waiting for state to change.
     Recoverable = 0,
@@ -119,13 +122,13 @@ pub struct ErrorDescriptor {
     /// Stable machine code (500-599).
     pub code: u32,
     /// Stable variant name for logs and metrics.
-    pub slug: &static str,
+    pub slug: &'static str,
     /// Short, safe title for users.
-    pub title: &static str,
+    pub title: &'static str,
     /// Safe detail message for users.
-    pub detail: &static str,
+    pub detail: &'static str,
     /// Actionable remediation hint for clients or operators.
-    pub remedy: &static str,
+    pub remedy: &'static str,
     /// Severity class for retry and alerting decisions.
     pub severity: Severity,
 }
@@ -135,6 +138,7 @@ pub struct ErrorDescriptor {
 /// This is the single source of truth for the taxonomy. Tests in
 /// `tests/error_taxonomy.rs` assert that every variant has a distinct, stable
 /// descriptor and that the code matches the `contracterror` representation.
+#[allow(dead_code)]
 pub fn describe(error: OracleError) -> ErrorDescriptor {
     match error {
         OracleError::SubmitterNotAuthorized => ErrorDescriptor {
@@ -305,14 +309,22 @@ pub fn describe(error: OracleError) -> ErrorDescriptor {
             remedy: "Reduce input magnitudes or split the operation into smaller steps.",
             severity: Severity::Recoverable,
         },
+        OracleError::SubmissionFromFuture => ErrorDescriptor {
+            code: 521,
+            slug: "submission_from_future",
+            title: "Submission from the future",
+            detail: "The submission timestamp is ahead of the accepted clock skew window.",
+            remedy: "Resubmit with a timestamp close to the current ledger time.",
+            severity: Severity::Recoverable,
+        },
     }
 }
 
-#[config(test)]
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    const ALL: [OracleError; 21] = [
+    const ALL: [OracleError; 22] = [
         OracleError::SubmitterNotAuthorized,
         OracleError::DuplicateSubmission,
         OracleError::FeedNotFound,
@@ -334,6 +346,7 @@ mod tests {
         OracleError::StakingConfigNotSet,
         OracleError::AlreadyUnbonding,
         OracleError::Overflow,
+        OracleError::SubmissionFromFuture,
     ];
 
     /// Guard against accidental drift: codes must match the contracterror
@@ -342,17 +355,17 @@ mod tests {
     fn codes_match_representation() {
         for error in ALL {
             let code = machine_code(error);
-            assert!((500..=code && code <= 599), "code out of range: {}", code);
+            assert!(code >= 500 && code <= 599, "code out of range: {}", code);
             assert_eq!(describe(error).code, code);
         }
     }
 
     /// Guard against duplicate codes and slugs.
-    [test]
+    #[test]
     fn codes_and_slugs_are_unique() {
         for (i, a) in ALL.iter().enumerate() {
             for b in ALL.iter().skip(i + 1) {
-                assert_ne!(machine_code((a), machine_code(*b));
+                assert_ne!(machine_code(*a), machine_code(*b));
                 assert_ne!(describe(*a).slug, describe(*b).slug);
             }
         }
@@ -373,7 +386,7 @@ mod tests {
 
     /// Guard against leaking internal implementation details in user-facing
     /// messages.
-    [test]
+    #[test]
     fn messages_are_user_safe() {
         for error in ALL {
             let d = describe(error);
@@ -388,7 +401,7 @@ mod tests {
     }
 
     /// Every variant must have a descriptor with a defined severity.
-    [test]
+    #[test]
     fn severity_is_defined() {
         for error in ALL {
             let s = describe(error).severity;

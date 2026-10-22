@@ -140,7 +140,7 @@ pub fn create_request_context(
 /// Fails with [`Error::Unauthorized`] if caller lacks permission, or [`Error::InvalidArgument`]
 /// if hop limits or validation checks fail.
 pub fn propagate_to_worker(
-    env: &soroban_sdk::Env,
+    _env: &soroban_sdk::Env,
     ctx: &RequestCorrelationContext,
     authorized: bool,
 ) -> Result<RequestCorrelationContext, Error> {
@@ -175,7 +175,7 @@ pub fn propagate_to_worker(
 /// Advances a worker execution attempt during retry, preserving root correlation
 /// while incrementing the retry attempt counter.
 pub fn advance_worker_retry(
-    env: &soroban_sdk::Env,
+    _env: &soroban_sdk::Env,
     ctx: &RequestCorrelationContext,
     next_attempt: u32,
 ) -> Result<RequestCorrelationContext, Error> {
@@ -197,7 +197,7 @@ pub fn advance_worker_retry(
 
 /// Propagates correlation context into a downstream external cross-contract call.
 pub fn propagate_to_external_call(
-    env: &soroban_sdk::Env,
+    _env: &soroban_sdk::Env,
     ctx: &RequestCorrelationContext,
 ) -> Result<RequestCorrelationContext, Error> {
     validate_correlation_context(ctx)?;

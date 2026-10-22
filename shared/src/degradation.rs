@@ -14,12 +14,12 @@
 //! 6. State rollback and recovery checkpoints for incident handling.
 
 use soroban_sdk::{
-    contracterror, contracttype, symbol_short, Address, Env, String, Symbol, Vec,
+    contracterror, contracttype, symbol_short, Address, Env, Symbol, Vec,
 };
 
 use crate::auth::require_admin;
 use crate::errors::Error;
-use crate::health::{get_dependency_health, set_dependency_health, DependencyHealth, DependencyStatus};
+use crate::health::{get_dependency_health, set_dependency_health, DependencyStatus};
 use crate::storage::{persistent_get, persistent_set};
 
 // ---------------------------------------------------------------------------
@@ -331,8 +331,6 @@ pub fn default_matrix_entry(
 // ---------------------------------------------------------------------------
 
 fn dependency_key(module: DegradationModule, dependency: ExternalDependencyKind) -> Symbol {
-    let m = module.as_symbol();
-    let d = dependency.as_symbol();
     // Unique key combining module and dependency
     match (module, dependency) {
         (DegradationModule::Treasury, _) => symbol_short!("mat_trs"),
@@ -584,8 +582,9 @@ where
                     Ok(val)
                 }
                 Err(err) => {
-                    // Record failure
-                    let level = record_dependency_check(env, module, dependency, false, 1);
+                    // Record failure; the degradation level is implied by the
+                    // fallback event published below.
+                    record_dependency_check(env, module, dependency, false, 1);
                     // If fallback is available for this entry, invoke fallback immediately
                     if let Some(entry) = get_dependency_entry(env, module, dependency) {
                         env.events().publish(

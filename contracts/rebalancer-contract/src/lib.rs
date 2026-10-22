@@ -10,8 +10,8 @@ pub use logging::log_trade;
 use shared::events::emit_action_executed;
 pub use slippage_predictor::predict_slippage;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Symbol, Vec,
-    U256,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Symbol,
+    Vec, U256,
 };
 
 #[contracttype]
@@ -117,6 +117,13 @@ pub struct SimulationResult {
 
 #[contract]
 pub struct MultiAssetRebalancer;
+
+/// The rebalancer contract does not accept a caller-supplied correlation ID
+/// (a rebalance is not tied to a request-scoped workflow), so every correlated
+/// event uses the canonical zero correlation ID.
+fn zero_correlation_id(env: &Env) -> BytesN<32> {
+    BytesN::from_array(env, &[0; 32])
+}
 
 #[contractimpl]
 impl MultiAssetRebalancer {
@@ -233,6 +240,7 @@ impl MultiAssetRebalancer {
 
         emit_action_executed(
             &env,
+            &zero_correlation_id(&env),
             symbol_short!("reb"),
             symbol_short!("rebal"),
             &env.current_contract_address(),

@@ -3,7 +3,7 @@
 extern crate std;
 
 use super::*;
-use soroban_sdk::{symbol_short, testutils::Address as _, Env};
+use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Ledger, Env};
 
 struct Fixture {
     env: Env,
@@ -565,12 +565,6 @@ fn test_threat_model_recovery_deactivate_compromised_submitter() {
     client.set_min_quorum(&fx.admin, &1);
     assert_eq!(client.get_min_quorum(), 1);
 }
-u32,
-        &ts,
-        &3u64,
-    );
-    assert!(r3.is_ok());
-}
 
 
 #[test]
@@ -724,7 +718,7 @@ fn test_get_latest_price_after_submit() {
 fn test_get_latest_price_unauthorized_fails() {
     let fx = setup();
     let client = OracleContractClient::new(&fx.env, &fx.contract_id);
-    let unauthorized = Address::generate(&fx.env);
+    let _unauthorized = Address::generate(&fx.env);
     let result = client.try_get_latest_price(&symbol_short!("BTCUSD"));
     assert!(result.is_err());
 }
@@ -898,46 +892,6 @@ fn test_median_ignores_single_outlier() {
     assert_eq!(latest.submission_count, 3);
 }
 
-
-#[test]
-fn test_future_timestamp_rejected() {
-    let fx = setup();
-    let client = OracleContractClient::new(&fx.env, &fx.contract_id);
-    client.register_submitter(&fx.admin, &fx.submitter1);
-
-    let feed_id = symbol_short!("BTCUSD");
-    let future_ts = fx.env.ledger().timestamp() + 61;
-
-    let result = client.try_submit_price(
-        &fx.submitter1,
-        &feed_id,
-        &50000_00000000i128,
-        &8u32,
-        &future_ts,
-        &1u64,
-    );
-    assert_eq!(result, Err(Ok(OracleError::SubmissionFromFuture)));
-}
-
-#[test]
-fn test_median_ignores_single_outlier() {
-    let fx = setup();
-    let submitter3 = Address::generate(&fx.env);
-    let client = OracleContractClient::new(&fx.env, &fx.contract_id);
-    client.register_submitter(&fx.admin, &fx.submitter1);
-    client.register_submitter(&fx.admin, &fx.submitter2);
-    client.register_submitter(&fx.admin, &submitter3);
-
-    let feed_id = symbol_short!("BTCUSD");
-    let ts = fx.env.ledger().timestamp();
-    client.submit_price(&fx.submitter1, &feed_id, &50_000_i128, &2u32, &ts, &1u64);
-    client.submit_price(&fx.submitter2, &feed_id, &51_000_i128, &2u32, &ts, &1u64);
-    client.submit_price(&submitter3, &feed_id, &1_000_000_i128, &2u32, &ts, &1u64);
-
-    let latest = client.get_latest_price(&feed_id);
-    assert_eq!(latest.price, 51_000_i128);
-    assert_eq!(latest.submission_count, 3);
-}
 
 #[test]
 fn test_set_staleness_window_success() {

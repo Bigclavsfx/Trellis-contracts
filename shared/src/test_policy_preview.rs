@@ -17,7 +17,7 @@ fn setup() -> (Env, Address, Address) {
     env.ledger().set_sequence_number(1_000);
     let admin = Address::generate(&env);
     let co_admin = Address::generate(&env);
-    crate::auth::set_admin(&env, &admin).unwrap();
+    crate::auth::set_admin(&env, &admin);
     (env, admin, co_admin)
 }
 

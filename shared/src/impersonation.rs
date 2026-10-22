@@ -28,9 +28,8 @@
 
 use soroban_sdk::{contracterror, contracttype, symbol_short, Address, Env, Symbol, Vec};
 
-use crate::auth::{has_permission, has_role, require_permission, Permission, Role};
-use crate::errors::Error;
-use crate::storage::{persistent_get, persistent_has, persistent_remove, persistent_set};
+use crate::auth::{has_permission, has_role, Permission, Role};
+use crate::storage::{persistent_get, persistent_remove, persistent_set};
 use crate::timeline::{record_action_audit_event, TimelineEventType};
 
 // ---------------------------------------------------------------------------
@@ -422,7 +421,7 @@ pub fn validate_session(
 
 /// Checks if an action is permitted within the session scope.
 pub fn check_action_permission(
-    env: &Env,
+    _env: &Env,
     session: &ImpersonationSession,
     action_type: ImpersonationAction,
     resource_type: ResourceType,
@@ -606,7 +605,7 @@ impl ResourceType {
 // ---------------------------------------------------------------------------
 
 fn is_valid_scope(
-    env: &Env,
+    _env: &Env,
     scope: &ImpersonationScope,
     resource_scopes: &Vec<ResourceScope>,
 ) -> bool {

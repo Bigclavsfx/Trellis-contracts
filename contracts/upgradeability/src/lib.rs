@@ -22,7 +22,7 @@
 //! calls `env.deployer().update_current_contract_wasm()`.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
     IntoVal, Symbol, Val, Vec,
 };
 
@@ -223,9 +223,8 @@ pub struct RollbackInfo {
     pub rollback_timestamp: u64,
 }
 
-// Export the types for external use
-pub use StateSnapshot;
-pub use RollbackInfo;
+// `StateSnapshot` and `RollbackInfo` are declared public above; re-exporting them
+// here would shadow the definitions in the same module.
 
 // ---------------------------------------------------------------------------
 // Contract
@@ -252,6 +251,7 @@ impl UpgradeabilityContract {
         );
         events::emit_module_initialized(
             &env,
+            &zero_correlation_id(&env),
             symbol_short!("upg_reg"),
             1,
             &admin,
@@ -333,6 +333,7 @@ impl UpgradeabilityContract {
 
         events::emit_contract_registered(
             &env,
+            &zero_correlation_id(&env),
             &contract_id,
             name,
             version,
@@ -407,7 +408,7 @@ impl UpgradeabilityContract {
         // Also store under a separate key for easy lookup.
         instance_set(&env, &(KEY_HOOK, contract_id.clone()), &hook_addr);
 
-        events::emit_migration_hook_set(&env, &contract_id, &hook_addr, env.ledger().timestamp());
+        events::emit_migration_hook_set(&env, &zero_correlation_id(&env), &contract_id, &hook_addr, env.ledger().timestamp());
         Ok(())
     }
 
@@ -490,7 +491,7 @@ impl UpgradeabilityContract {
         instance_set(&env, &(KEY_UPG_PROP, proposal_id), &proposal);
         instance_set(&env, &(KEY_PENDING, contract_id.clone()), &proposal_id);
 
-        events::emit_upgrade_proposed(&env, proposal_id, &contract_id, new_version, &caller, eta);
+        events::emit_upgrade_proposed(&env, &zero_correlation_id(&env), proposal_id, &contract_id, new_version, &caller, eta);
         Ok(proposal_id)
     }
 
@@ -591,7 +592,12 @@ impl UpgradeabilityContract {
                 proposal.new_version,
             ) {
                 // Validation failed - trigger automatic rollback
-                execute_rollback(&env, &proposal.contract_id, &caller, "Post-upgrade validation failed")?;
+                execute_rollback(
+                    &env,
+                    &proposal.contract_id,
+                    &caller,
+                    soroban_sdk::String::from_str(&env, "Post-upgrade validation failed"),
+                )?;
                 return Err(UpgradeError::PostUpgradeValidationFailed);
             }
         }
@@ -623,6 +629,7 @@ impl UpgradeabilityContract {
 
         events::emit_upgrade_executed(
             &env,
+            &zero_correlation_id(&env),
             proposal_id,
             &proposal.contract_id,
             old_version,
@@ -813,7 +820,7 @@ impl UpgradeabilityContract {
             return Err(UpgradeError::AlreadyExecuted);
         }
 
-        execute_rollback(&env, &contract_id, &caller, reason.to_string().as_str())
+        execute_rollback(&env, &contract_id, &caller, reason)
     }
 }
 
@@ -965,7 +972,7 @@ fn execute_rollback(
     env: &Env,
     contract_id: &Address,
     caller: &Address,
-    reason: &str,
+    reason: soroban_sdk::String,
 ) -> Result<(), UpgradeError> {
     // Get the state snapshot.
     let snapshot: StateSnapshot = instance_get(&env, &(KEY_STATE_SNAPSHOT, contract_id.clone()))
@@ -990,7 +997,7 @@ fn execute_rollback(
         instance_get(&env, &(KEY_ROLLBACK_INFO, contract_id.clone()))
             .ok_or(UpgradeError::ContractNotRegistered)?;
     rollback_info.can_rollback = false;
-    rollback_info.rollback_reason = soroban_sdk::String::from_str(env, reason);
+    rollback_info.rollback_reason = reason;
     rollback_info.rollback_timestamp = env.ledger().timestamp();
     instance_set(&env, &(KEY_ROLLBACK_INFO, contract_id.clone()), &rollback_info);
 

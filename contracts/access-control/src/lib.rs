@@ -94,7 +94,6 @@ fn is_valid_pause_scope(scope: &Symbol) -> bool {
 }
 
 /// Fail with [`AccessControlError::OperationPaused`] when `scope` is paused.
-#[allow(dead_code)]
 fn require_not_paused(env: &Env, scope: Symbol) -> ContractResult<()> {
     if env
         .storage()
@@ -414,6 +413,7 @@ impl AccessControlContract {
         new_admin: Address,
     ) -> Result<(), AccessControlError> {
         require_action(&env, &caller, &Action::ManageMaintainers)?;
+        require_not_paused(&env, PAUSE_SCOPE_ADMINS)?;
 
         let mut admins: Map<Address, bool> = env
             .storage()
@@ -480,6 +480,7 @@ impl AccessControlContract {
         target: Address,
     ) -> Result<(), AccessControlError> {
         require_action(&env, &caller, &Action::ManageMaintainers)?;
+        require_not_paused(&env, PAUSE_SCOPE_ADMINS)?;
 
         let super_admin_addr: Address = env
             .storage()
@@ -540,6 +541,7 @@ impl AccessControlContract {
         expiry: u64,
     ) -> Result<(), AccessControlError> {
         require_action(&env, &caller, &Action::TransferOwnership)?;
+        require_not_paused(&env, PAUSE_SCOPE_ADMINS)?;
 
         let super_admin_addr: Address = env
             .storage()
@@ -613,6 +615,8 @@ impl AccessControlContract {
             return Err(AccessControlError::NotPendingOwner);
         }
 
+        require_not_paused(&env, PAUSE_SCOPE_ADMINS)?;
+
         let now = env.ledger().timestamp();
         if now > pending.expiry {
             env.storage().instance().remove(&DataKey::PendingSuperAdmin);
@@ -670,6 +674,7 @@ impl AccessControlContract {
     /// Cancel a pending ownership transfer. Caller must be the current super-admin.
     pub fn cancel_ownership_transfer(env: Env, caller: Address) -> Result<(), AccessControlError> {
         require_action(&env, &caller, &Action::CancelOwnershipTransfer)?;
+        require_not_paused(&env, PAUSE_SCOPE_ADMINS)?;
 
         let super_admin_addr: Address = env
             .storage()
@@ -732,6 +737,7 @@ impl AccessControlContract {
     /// callers receive [`AccessControlError::NotAdmin`].
     pub fn create_role(env: Env, caller: Address, role: Symbol) -> Result<(), AccessControlError> {
         require_action(&env, &caller, &Action::ConfigureRoleRegistry)?;
+        require_not_paused(&env, PAUSE_SCOPE_ROLES)?;
 
         validate_role_symbol(&role)?;
 
@@ -776,6 +782,7 @@ impl AccessControlContract {
         parent: Symbol,
     ) -> Result<(), AccessControlError> {
         require_action(&env, &caller, &Action::ConfigureRoleRegistry)?;
+        require_not_paused(&env, PAUSE_SCOPE_ROLES)?;
 
         ensure_role_exists(&env, &role)?;
         ensure_role_exists(&env, &parent)?;
@@ -831,6 +838,7 @@ impl AccessControlContract {
         user: Address,
     ) -> Result<(), AccessControlError> {
         require_action(&env, &caller, &Action::AssignRoles)?;
+        require_not_paused(&env, PAUSE_SCOPE_ROLES)?;
 
         ensure_role_exists(&env, &role)?;
 
@@ -862,6 +870,7 @@ impl AccessControlContract {
         user: Address,
     ) -> Result<(), AccessControlError> {
         require_action(&env, &caller, &Action::AssignRoles)?;
+        require_not_paused(&env, PAUSE_SCOPE_ROLES)?;
 
         ensure_role_exists(&env, &role)?;
 
@@ -908,6 +917,7 @@ impl AccessControlContract {
         duration_seconds: u64,
     ) -> Result<(), AccessControlError> {
         require_action(&env, &caller, &Action::AssignRoles)?;
+        require_not_paused(&env, PAUSE_SCOPE_ROLES)?;
 
         ensure_role_exists(&env, &role)?;
 
@@ -968,6 +978,7 @@ impl AccessControlContract {
         // Role-scoped: a maintainer, or a holder of `role`, may invite.
         // The permission matrix owns the escalation check.
         require_action(&env, &caller, &Action::InviteMember(role.clone()))?;
+        require_not_paused(&env, PAUSE_SCOPE_INVITES)?;
 
         // Rate limiting
         let current_time = env.ledger().timestamp();
@@ -1032,6 +1043,8 @@ impl AccessControlContract {
         role: Symbol,
     ) -> Result<(), AccessControlError> {
         caller.require_auth();
+        require_not_paused(&env, PAUSE_SCOPE_INVITES)?;
+        require_not_paused(&env, PAUSE_SCOPE_ROLES)?;
 
         let key = DataKey::Invitation(caller.clone(), role.clone());
         if let Some(inv) = env.storage().instance().get::<DataKey, Invitation>(&key) {
@@ -1079,6 +1092,7 @@ impl AccessControlContract {
                 &caller,
                 &Action::CancelInvitation(inv.inviter.clone()),
             )?;
+            require_not_paused(&env, PAUSE_SCOPE_INVITES)?;
 
             env.storage().instance().remove(&key);
             record_access_audit(
@@ -2380,6 +2394,69 @@ mod tests {
         assert!(client.is_paused(&roles));
         assert!(!client.is_paused(&admins));
         assert!(!client.is_paused(&invites));
+    }
+
+    #[test]
+    fn paused_role_scope_rejects_mutation_and_allows_retry_after_resume() {
+        let (env, super_admin, contract_id) = setup();
+        let client = client_for(&env, &contract_id);
+        let role = Symbol::new(&env, "operator");
+        let member = Address::generate(&env);
+        client.create_role(&super_admin, &role);
+
+        client.pause(&super_admin, &symbol_short!("roles"));
+        assert_eq!(
+            client.try_grant_role(&super_admin, &role, &member),
+            Err(Ok(AccessControlError::OperationPaused))
+        );
+        assert!(!client.has_role(&role, &member));
+
+        client.resume(&super_admin, &symbol_short!("roles"));
+        client.grant_role(&super_admin, &role, &member);
+        assert!(client.has_role(&role, &member));
+    }
+
+    #[test]
+    fn pause_scopes_block_only_their_operation_families() {
+        let (env, super_admin, contract_id) = setup();
+        let client = client_for(&env, &contract_id);
+        let role = Symbol::new(&env, "operator");
+        let invitee = Address::generate(&env);
+        client.create_role(&super_admin, &role);
+
+        client.pause(&super_admin, &symbol_short!("invites"));
+        assert_eq!(
+            client.try_create_invitation(&super_admin, &role, &invitee, &600),
+            Err(Ok(AccessControlError::OperationPaused))
+        );
+        client.grant_role(&super_admin, &role, &invitee);
+        assert!(client.has_role(&role, &invitee));
+
+        client.resume(&super_admin, &symbol_short!("invites"));
+        client.pause(&super_admin, &symbol_short!("admins"));
+        let next_admin = Address::generate(&env);
+        assert_eq!(
+            client.try_add_admin(&super_admin, &next_admin),
+            Err(Ok(AccessControlError::OperationPaused))
+        );
+        assert!(!client.is_admin(&next_admin));
+    }
+
+    #[test]
+    fn paused_mutations_still_require_authorization() {
+        let (env, super_admin, contract_id) = setup();
+        let client = client_for(&env, &contract_id);
+        let outsider = Address::generate(&env);
+        let role = Symbol::new(&env, "operator");
+        let member = Address::generate(&env);
+        client.create_role(&super_admin, &role);
+        client.pause(&super_admin, &symbol_short!("roles"));
+
+        assert_eq!(
+            client.try_grant_role(&outsider, &role, &member),
+            Err(Ok(AccessControlError::NotAdmin))
+        );
+        assert!(!client.has_role(&role, &member));
     }
 
     #[test]

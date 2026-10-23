@@ -199,7 +199,7 @@ pub fn run_reconciliation(
     ledger_records: Vec<SourceRecord>,
     db_records: Vec<SourceRecord>,
     user_records: Vec<SourceRecord>,
-    current_timestamp: u64,
+    _current_timestamp: u64,
 ) -> ReconciliationReport {
     let mut drifts = Vec::new(env);
     let mut total_scanned = 0;

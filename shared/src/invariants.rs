@@ -100,9 +100,7 @@
 //!    - **Failure / Abort**: $\Delta B_{\text{all}} = 0$, $\Delta B_{\text{contract}} = 0$, $\Delta L_{\text{internal}} = 0$.
 
 extern crate std;
-use std::format;
 use std::string::String;
-use std::vec;
 use std::vec::Vec;
 
 use soroban_sdk::{token, Address, Env};
@@ -541,7 +539,7 @@ mod monitor_tests {
         
         let before = AssetConservationSnapshot {
             ledger_sequence: 100,
-            external_accounts: vec![AccountBalanceRecord { account: addr1.clone(), label: String::from("user"), balance: 50 }],
+            external_accounts: std::vec![AccountBalanceRecord { account: addr1.clone(), label: String::from("user"), balance: 50 }],
             contract_token_reserve: 100,
             internal_liabilities: 100,
         };
@@ -561,7 +559,7 @@ mod monitor_tests {
         
         let before = AssetConservationSnapshot {
             ledger_sequence: 100,
-            external_accounts: vec![AccountBalanceRecord { account: addr1.clone(), label: String::from("user"), balance: 50 }],
+            external_accounts: std::vec![AccountBalanceRecord { account: addr1.clone(), label: String::from("user"), balance: 50 }],
             contract_token_reserve: 100,
             internal_liabilities: 100,
         };

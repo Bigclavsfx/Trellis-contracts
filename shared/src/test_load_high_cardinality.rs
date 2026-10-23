@@ -11,7 +11,11 @@ extern crate std;
 
 use std::format;
 
-use soroban_sdk::{contract, contractimpl, Bytes, Env, Vec};
+use soroban_sdk::{
+    contract, contractimpl,
+    testutils::Events as _,
+    Bytes, Env, Vec,
+};
 
 use crate::errors::Error;
 use crate::pagination::{

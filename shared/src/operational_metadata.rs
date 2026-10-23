@@ -21,7 +21,7 @@ use soroban_sdk::{contracttype, symbol_short, Env, Symbol, Vec};
 
 use crate::errors::Error;
 use crate::retention::{
-    days_to_ledgers, HoldReason, HOLD_INDEFINITE, LEDGERS_PER_DAY, MAX_RETAIN_LEDGERS,
+    days_to_ledgers, HoldReason, HOLD_INDEFINITE, MAX_RETAIN_LEDGERS,
 };
 use crate::storage::{
     instance_get, instance_set, persistent_get, persistent_has, persistent_remove, persistent_set,

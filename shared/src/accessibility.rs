@@ -28,6 +28,10 @@ pub enum AccessibilityError {
     Unauthorized = 962,
     /// Dense form/table layout missing required accessibility attributes.
     InvalidDenseLayout = 963,
+    /// An active focus trap does not declare an initial focus target.
+    MissingInitialFocus = 964,
+    /// An active focus trap does not declare a return focus target.
+    MissingReturnFocus = 965,
 }
 
 impl From<AccessibilityError> for Error {
@@ -37,6 +41,8 @@ impl From<AccessibilityError> for Error {
             AccessibilityError::InvalidStateTransition => Error::InvalidArgument,
             AccessibilityError::Unauthorized => Error::Unauthorized,
             AccessibilityError::InvalidDenseLayout => Error::InvalidArgument,
+            AccessibilityError::MissingInitialFocus => Error::InvalidArgument,
+            AccessibilityError::MissingReturnFocus => Error::InvalidArgument,
         }
     }
 }
@@ -130,6 +136,8 @@ pub enum KeyboardNavMode {
     LinearTab = 1,
     RovingTabindex = 2,
     ModalTrap = 3,
+    /// Standard tab order (no roving tabindex, no focus trap).
+    Standard = 4,
 }
 
 /// Modal focus trap specification for high-impact actions.
@@ -152,6 +160,17 @@ pub struct AccessibilityMetadata {
     pub role: AriaRole,
     pub focus_trap: FocusTrapConfig,
     pub keyboard_mode: KeyboardNavMode,
+    /// Accessible name of the live region (a stable DOM identifier).
+    pub label: Symbol,
+    /// Focus target the client restores when the region loses focus.
+    pub return_focus: Symbol,
+    /// Whether the client may render an animated transition.
+    ///
+    /// Always `false`: a contract cannot know the user's motion preference,
+    /// so announcements must survive motion reduction (WCAG 2.1 AA).
+    pub animation_enabled: bool,
+    /// Whether a state change must be re-announced to assistive technology.
+    pub announce_on_change: bool,
 }
 
 /// Accessibility metadata for dense form and table layouts.
@@ -189,8 +208,8 @@ pub struct ErrorRecoveryConfig {
 // ---------------------------------------------------------------------------
 
 const KEY_LAST_A11Y_STATE: Symbol = symbol_short!("last_a11y");
-const KEY_LAST_DENSE_LAYOUT: Symbol = symbol_short!("last_dense");
-const KEY_LAST_RECOVERY: Symbol = symbol_short!("last_recov");
+const KEY_LAST_DENSE_LAYOUT: Symbol = symbol_short!("dense");
+const KEY_LAST_RECOVERY: Symbol = symbol_short!("recovry");
 
 // ---------------------------------------------------------------------------
 // Core Accessibility Functions
@@ -237,15 +256,19 @@ pub fn map_state_to_accessibility(
         } else {
             symbol_short!("main")
         },
-        return_focus,
+        return_focus: return_focus.clone(),
         dismissable: state != AsyncStatusState::Broadcasting,
     };
 
     let keyboard_mode = if is_modal {
         KeyboardNavMode::ModalTrap
     } else {
-        KeyboardNavMode::LinearTab
+        KeyboardNavMode::Standard
     };
+
+    // Screen readers must be told about every non-idle transition, including
+    // background settlement, so the announcement survives motion reduction.
+    let announce_on_change = state != AsyncStatusState::Idle;
 
     AccessibilityMetadata {
         state,
@@ -254,14 +277,22 @@ pub fn map_state_to_accessibility(
         role,
         focus_trap,
         keyboard_mode,
+        label: symbol_short!("status"),
+        return_focus,
+        // Reduced-motion users must never receive animated transitions.
+        animation_enabled: false,
+        announce_on_change,
     }
 }
 
 /// Validates that a focus trap has valid initial and return focus identifiers.
 pub fn validate_focus_trap_config(config: &FocusTrapConfig) -> Result<(), AccessibilityError> {
     if config.trap_active {
-        if config.initial_focus == symbol_short!("") || config.return_focus == symbol_short!("") {
-            return Err(AccessibilityError::InvalidFocusTrap);
+        if config.initial_focus == symbol_short!("") {
+            return Err(AccessibilityError::MissingInitialFocus);
+        }
+        if config.return_focus == symbol_short!("") {
+            return Err(AccessibilityError::MissingReturnFocus);
         }
     }
     Ok(())

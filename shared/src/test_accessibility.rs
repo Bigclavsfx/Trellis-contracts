@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn test_keyboard_navigation_modes_for_dense_forms_and_tables() {
-        let return_target = symbol_short!("form_field");
+        let return_target = symbol_short!("form_fld");
 
         // Dense form fields should remain in standard (roving) keyboard mode.
         let idle = map_state_to_accessibility(AsyncStatusState::Idle, return_target.clone());
@@ -226,11 +226,21 @@ mod tests {
     fn test_metadata_roundtrip_preserves_aria_contract() {
         let return_target: Symbol = symbol_short!("tx_btn");
         let metadata = AccessibilityMetadata {
+            state: AsyncStatusState::Succeeded,
             role: AriaRole::Status,
             aria_live: AriaLiveMode::Polite,
             aria_busy: false,
             label: symbol_short!("tx_status"),
-            return_focus: return_target,
+            return_focus: return_target.clone(),
+            focus_trap: FocusTrapConfig {
+                trap_active: false,
+                initial_focus: symbol_short!(""),
+                return_focus: return_target,
+                dismissable: true,
+            },
+            keyboard_mode: KeyboardNavMode::Standard,
+            animation_enabled: false,
+            announce_on_change: true,
         };
 
         let a11y = map_state_to_accessibility(AsyncStatusState::Succeeded, metadata.return_focus.clone());

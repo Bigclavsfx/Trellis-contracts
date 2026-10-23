@@ -149,6 +149,7 @@ pub fn deactivate_submitter(env: &Env, submitter: &Address) {
 }
 
 /// Activate a submitter.
+#[allow(dead_code)]
 pub fn activate_submitter(env: &Env, submitter: &Address) {
     let mut submitters = get_submitters(env);
     if let Some(mut info) = submitters.get(submitter.clone()) {
@@ -159,6 +160,7 @@ pub fn activate_submitter(env: &Env, submitter: &Address) {
 }
 
 /// Get the latest price for a feed.
+#[allow(dead_code)]
 pub fn get_feed_latest(env: &Env, feed_id: &Symbol) -> Option<FeedLatest> {
     let feeds: Map<Symbol, FeedLatest> = env
         .storage()

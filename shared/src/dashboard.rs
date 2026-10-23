@@ -577,7 +577,7 @@ pub fn group_by_retryability(env: &Env, failures: &Vec<PartialFailure>) -> Vec<F
 }
 
 /// Helper function to convert OperationType to Symbol.
-fn operation_type_to_symbol(env: &Env, op_type: &OperationType) -> Symbol {
+fn operation_type_to_symbol(_env: &Env, op_type: &OperationType) -> Symbol {
     match op_type {
         OperationType::Payment => symbol_short!("payment"),
         OperationType::Transfer => symbol_short!("transfer"),

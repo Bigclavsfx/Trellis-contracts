@@ -40,7 +40,8 @@
 //! For full API details, see the module items below.
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, vec, Address, Bytes, Env, IntoVal, Symbol,
+    contract, contractimpl, contracttype, symbol_short, vec, Address, Bytes, BytesN, Env, IntoVal,
+    Symbol,
 };
 
 use shared::errors::Error;
@@ -123,6 +124,13 @@ pub struct ClaimRewardsEvent {
 #[contract]
 pub struct ReferralContract;
 
+/// The referral contract does not accept a caller-supplied correlation ID
+/// (the contract has no request-scoped workflow to correlate), so every
+/// correlated event uses the canonical zero correlation ID.
+fn zero_correlation_id(env: &Env) -> BytesN<32> {
+    BytesN::from_array(env, &[0; 32])
+}
+
 #[contractimpl]
 impl ReferralContract {
     /// Initialise the contract, setting the admin address.
@@ -134,6 +142,7 @@ impl ReferralContract {
         env.storage().instance().set(&DataKey::TierBps(1), &0_i128);
         emit_module_initialized(
             &env,
+            &zero_correlation_id(&env),
             symbol_short!("referral"),
             1,
             &admin,
@@ -148,6 +157,7 @@ impl ReferralContract {
         env.storage().instance().set(&DataKey::Treasury, &treasury);
         emit_action_executed(
             &env,
+            &zero_correlation_id(&env),
             symbol_short!("referral"),
             symbol_short!("treasury"),
             &caller,
@@ -212,6 +222,7 @@ impl ReferralContract {
         )?;
         emit_permission_changed(
             &env,
+            &zero_correlation_id(&env),
             symbol_short!("referral"),
             symbol_short!("ref_mgr"),
             &manager,
@@ -252,6 +263,7 @@ impl ReferralContract {
         );
         emit_permission_changed(
             &env,
+            &zero_correlation_id(&env),
             symbol_short!("referral"),
             symbol_short!("tier"),
             &caller,
@@ -300,6 +312,7 @@ impl ReferralContract {
         );
         emit_action_executed(
             &env,
+            &zero_correlation_id(&env),
             symbol_short!("referral"),
             symbol_short!("referrer"),
             &caller,
@@ -363,6 +376,7 @@ impl ReferralContract {
         );
         emit_action_executed(
             &env,
+            &zero_correlation_id(&env),
             symbol_short!("referral"),
             symbol_short!("register"),
             &wallet,
@@ -471,6 +485,7 @@ impl ReferralContract {
         );
         emit_action_executed(
             &env,
+            &zero_correlation_id(&env),
             symbol_short!("referral"),
             symbol_short!("claim"),
             &referrer,
@@ -522,6 +537,7 @@ impl ReferralContract {
 
         emit_action_executed(
             &env,
+            &zero_correlation_id(&env),
             symbol_short!("referral"),
             symbol_short!("reg_code"),
             &caller,

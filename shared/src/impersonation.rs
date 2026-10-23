@@ -448,7 +448,7 @@ pub fn validate_session(
 
 /// Checks if an action is permitted within the session scope.
 pub fn check_action_permission(
-    env: &Env,
+    _env: &Env,
     session: &ImpersonationSession,
     action_type: ImpersonationAction,
     resource_type: ResourceType,

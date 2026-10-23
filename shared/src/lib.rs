@@ -492,3 +492,5 @@ mod test_domain_events;
 mod test_snapshot_restore;
 #[cfg(test)]
 mod test_queue_backpressure;
+#[cfg(test)]
+mod test_concurrent_replay;

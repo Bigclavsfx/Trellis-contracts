@@ -23,3 +23,9 @@ pub mod events;
 pub mod batch;
 #[path = "../../../shared/src/error_taxonomy.rs"]
 pub mod error_taxonomy;
+#[cfg(test)]
+#[path = "../../../shared/src/ledger_sequence.rs"]
+pub mod ledger_sequence;
+#[cfg(test)]
+#[path = "../../../shared/src/test_concurrent_replay.rs"]
+mod test_concurrent_replay;

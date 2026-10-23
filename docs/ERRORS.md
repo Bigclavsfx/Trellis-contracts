@@ -67,6 +67,7 @@ canonical client mapping ranges are:
 | `Upgradeability` | `900-915` | `contracts/upgradeability::UpgradeError` |
 | `Import` | `940-949` | `shared::import::ImportError` |
 | `Export` | `920-934` | `shared::export::ExportError` |
+| `SupportAccess` | `960-973` | `shared::impersonation::ImpersonationError` |
 | `Marketplace` | `2000-2023` | `contracts/nft-marketplace::MarketError` |
 
 Not every number inside a range is assigned. Additive changes require a new

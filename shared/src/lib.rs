@@ -64,6 +64,7 @@ pub mod sanitize;
 pub mod scan_guard;
 pub mod semantic;
 pub mod snapshot;
+pub mod snapshot_restore;
 pub mod storage;
 pub mod stale_state;
 pub mod storage_version;
@@ -210,8 +211,10 @@ pub use health_guard::{
 pub use impersonation::{
 check_action_permission, create_session, get_active_sessions_for_impersonator,
 get_active_sessions_for_user, get_current_impersonation, is_being_impersonated, record_action,
+support_access_notice,
 revoke_session, validate_session, ImpersonationAction, ImpersonationError, ImpersonationScope,
 ImpersonationSession, ResourceScope, ResourceType, SessionParams, SessionResult, SessionState,
+SupportAccessNotice,
 DEFAULT_SESSION_DURATION, MAX_CONCURRENT_SESSIONS, MAX_SESSION_DURATION,
 };
 pub use import::{
@@ -415,6 +418,15 @@ pub use policy_preview::{
     TOPIC_POLICY_COMMIT, TOPIC_POLICY_ROLLBACK, TOPIC_POLICY_SIMULATION,
 };
 pub use utils::{is_expired, now};
+pub use snapshot_restore::{
+    clear_quarantine, execute_restore_verification_and_rebuild, get_latest_restore_receipt,
+    get_restore_receipt, get_stored_derived_view, is_module_quarantined, rebuild_derived_views,
+    reconcile_derived_views, rollback_restore, verify_critical_data_invariants,
+    CanonicalRestoreRecord, CriticalRecordKind, DerivedViewEntry, DerivedViewKind,
+    RestoreMismatchReport, RestoreModule, RestoreReport, RestoreRollbackSnapshot,
+    RestoreSeverity, RestoreStorageKey, RestoreVerificationFailure, RestoreVerificationReceipt,
+    SnapshotRestoreError,
+};
 #[cfg(test)]
 mod test_reconciliation;
 #[cfg(test)]
@@ -482,6 +494,6 @@ mod test_ledger_fixtures;
 // Schema-compatibility tests for versioned domain events (Issue #337).
 #[cfg(test)]
 mod test_domain_events;
-// Maintainer action approval flow with signed intent receipts (Issue #228).
+// Snapshot restore verification and derived view rebuilding tests.
 #[cfg(test)]
-mod test_maintainer_approval;
+mod test_snapshot_restore;

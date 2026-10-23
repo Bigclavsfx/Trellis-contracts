@@ -32,6 +32,7 @@ local `#[contracterror]` enum, and `shared::batch::BatchError`.
 | `Batch` / `BatchError` | `800-805` | Bounded multi-operation execution. |
 | `Upgradeability` / `UpgradeError` | `900-911` | Upgrade registry, proposal, validation, and migration failures. |
 | `Import` / `ImportError` | `940-948` | Import validation and execution. |
+| `SupportAccess` / `ImpersonationError` | `960-973` | Time-bounded, explicitly scoped support sessions and audit failures. |
 | `Shared` / `Error` | `950-952` | Aid compatibility errors retained in the shared enum. |
 | `Shared` / `Error` | `1000-1008` | Marketplace compatibility aliases retained in the shared enum. |
 | `Marketplace` / `MarketError` | `2000-2023` | Marketplace-local errors. |
@@ -78,6 +79,7 @@ than once.
 | `shared::timeline` | User-facing activity timeline: `Public` / `Participant` / `Maintainer` visibility filtering, stable `ResourceLink` anchors, cursor pagination, and a maintainer-only audit store that is structurally separate from the user timeline | `docs/TIMELINE.md` |
 | `shared::operational_metadata` | Data minimization review and retention enforcement for operational metadata across Treasury, Aid, Referral, Governance, Oracle, and Marketplace modules with testable two-phase deletion, hold management, and migration adapters | `docs/OPERATIONAL_METADATA_RETENTION.md` |
 | `shared::audit_ledger` | Tamper-evident, hash-chained ledger for privileged and financial events: `append_event` / `append_privileged` / `append_financial`, `verify_chain`, bounded `export_ledger` + storage-free `verify_export`, and a `publish_head_checkpoint` anchor event | `docs/AUDIT_LEDGER.md` |
+| `shared::impersonation` | Authenticated support sessions restricted to explicit resource scopes, scope-checked and audited actions, expiry/revocation events, and a user-safe expiry notice | `docs/SCOPED_IMPERSONATION.md` |
 | `shared::ledger_sequence` | Test-only deterministic ledger control (`LedgerSequenceHarness`): explicit sequence plus derived timestamp, forward-only `at()`, and `order_of` / `classify` boundary classification for same-ledger, next-ledger, expired-ledger and out-of-order submissions | `docs/LEDGER_ASSUMPTIONS.md` |
 | `shared::rollout_guard` | Feature-flag rollout guard with telemetry monitoring, automated rollback triggers (consecutive failures, error rates, invariant breaches), clean state verification across Treasury, Aid, Referral, Governance, Oracle, and Marketplace, and re-arming protection | `docs/FEATURE_FLAG_ROLLOUT_GUARD.md` |
 | `shared::export` | Permission-aware export pipeline across Treasury, Aid, Referral, Governance, Oracle, and Marketplace: bounded memory chunking (`DEFAULT_EXPORT_CHUNK_SIZE = 25`, `MAX_EXPORT_CHUNK_SIZE = 50`), in-flight cancellation (`cancel_export_stream`), forbidden field purging, and cumulative integrity digests | `docs/EXPORT_PIPELINE.md` |

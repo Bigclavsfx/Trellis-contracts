@@ -76,6 +76,43 @@ contract grants `ReferralManager` access through `set_referral_manager`.
 Oracle submitters remain controlled by the oracle's existing explicit
 registration/deactivation API.
 
+## Scoped emergency pause and recovery
+
+The access-control contract exposes three independent emergency scopes:
+
+| Scope | Blocked mutations |
+|---|---|
+| `roles` | Role creation, hierarchy changes, grants, revocations, and accepting an invitation (which grants a role) |
+| `admins` | Adding/removing admins and proposing, accepting, or cancelling ownership transfers |
+| `invites` | Creating, accepting, or revoking invitations |
+
+Reads remain available while a scope is paused. Pause and resume also remain
+available, including resuming while the `admins` scope is active, so an
+authorized maintainer can recover the contract. A pause only affects the
+access-control contract; it does not pause unrelated Trellis contracts.
+Pause/resume transitions record the acting address and timestamp while paused,
+emit events, and write to the access-control audit trail.
+
+Soroban entrypoints execute atomically. A mutation rejected with
+`OperationPaused` commits no role, admin, invitation, audit, or event changes.
+There is no on-chain queue and no automatic execution on resume. After the
+underlying incident is addressed, an authorized maintainer resumes only the
+affected scope, then the caller can submit the operation again. Before retrying
+an operation whose transaction outcome was uncertain, inspect contract state
+and transaction status first: the pause itself does not make every operation
+idempotent (for example, creating an existing role fails, while invitation
+creation replaces the same invitee/role record).
+
+An unauthorized caller is rejected by the normal permission check even when a
+scope is paused. Invalid scope names and duplicate pause/resume requests remain
+errors. To roll back an emergency action, resume the affected scope; pause
+state does not reverse prior successful mutations. If the paused period
+interrupted an ownership transfer, inspect `get_pending_ownership` and either
+resume/cancel it through its normal authorized flow or allow its expiry to
+elapse before proposing a replacement. For a failed business operation,
+correct its underlying validation or state issue before retrying; resuming
+does not bypass those checks.
+
 ## Time-bounded role grants
 
 `grant_role` grants a role permanently. `grant_role_timed(caller, role, account,

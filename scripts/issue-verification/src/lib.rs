@@ -29,3 +29,8 @@ pub mod ledger_sequence;
 #[cfg(test)]
 #[path = "../../../shared/src/test_concurrent_replay.rs"]
 mod test_concurrent_replay;
+#[path = "../../../shared/src/resumable_repair.rs"]
+pub mod resumable_repair;
+#[cfg(test)]
+#[path = "../../../shared/src/test_resumable_repair.rs"]
+mod test_resumable_repair;

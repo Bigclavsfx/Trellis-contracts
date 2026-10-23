@@ -56,6 +56,7 @@ pub mod reconciliation;
 pub mod recovery;
 pub mod release_readiness;
 pub mod replay;
+pub mod resumable_repair;
 pub mod risk_scoring;
 pub mod rollout_guard;
 pub mod retention;
@@ -494,3 +495,5 @@ mod test_snapshot_restore;
 mod test_queue_backpressure;
 #[cfg(test)]
 mod test_concurrent_replay;
+#[cfg(test)]
+mod test_resumable_repair;

@@ -12,6 +12,7 @@ crate-type = ["rlib"]
 soroban-sdk = { workspace = true }
 
 [dev-dependencies]
+ed25519-dalek = "=2.2.0"
 soroban-sdk = { workspace = true, features = ["testutils"] }
 # Test-only: signs the intent digest so the approval flow can be exercised
 # with real Ed25519 signatures. Dev-dependencies are never compiled into the

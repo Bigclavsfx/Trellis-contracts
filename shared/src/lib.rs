@@ -25,6 +25,7 @@ pub mod errors;
 pub mod event_dead_letter;
 pub mod events;
 pub mod evidence;
+pub mod external_evidence;
 pub mod export;
 pub mod feature_flags;
 pub mod health;

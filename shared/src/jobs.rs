@@ -74,6 +74,10 @@ pub enum JobError {
     NotRetryable = 6,
     /// Only the contract admin may manage the worker.
     Unauthorized = 7,
+    /// Pending plus retained dead-letter work has reached capacity.
+    QueueFull = 8,
+    /// Queue capacity must be between 1 and MAX_QUEUE_CAPACITY.
+    InvalidCapacity = 9,
 }
 
 // ---------------------------------------------------------------------------
@@ -467,6 +471,40 @@ pub fn worker_config(env: &Env) -> WorkerConfig {
     instance_get(env, &WorkerKey::Config).unwrap_or_else(default_worker_config)
 }
 
+/// Bounds both queue scans and retained dead-letter work without changing WorkerConfig XDR.
+pub const MAX_QUEUE_CAPACITY: u32 = 256;
+pub const DEFAULT_QUEUE_CAPACITY: u32 = 64;
+const CAPACITY_KEY: Symbol = symbol_short!("job_cap");
+
+pub fn queue_capacity(env: &Env) -> u32 {
+    instance_get(env, &CAPACITY_KEY).unwrap_or(DEFAULT_QUEUE_CAPACITY)
+}
+
+/// Lowering below current occupancy blocks admission but still permits draining.
+pub fn configure_queue_capacity(
+    env: &Env,
+    caller: &Address,
+    capacity: u32,
+) -> Result<(), JobError> {
+    require_admin(env, caller).map_err(|_| JobError::Unauthorized)?;
+    if capacity == 0 || capacity > MAX_QUEUE_CAPACITY {
+        return Err(JobError::InvalidCapacity);
+    }
+    instance_set(env, &CAPACITY_KEY, &capacity);
+    Ok(())
+}
+
+fn require_queue_slot(env: &Env) -> Result<(), JobError> {
+    if pending_job_ids(env)
+        .len()
+        .saturating_add(dead_letter_job_ids(env).len())
+        >= queue_capacity(env)
+    {
+        return Err(JobError::QueueFull);
+    }
+    Ok(())
+}
+
 /// Update the worker configuration. Admin only.
 pub fn configure_worker(
     env: &Env,
@@ -553,6 +591,8 @@ pub fn enqueue_job(
         }
     }
 
+    // Admission is checked after dedupe and before allocating or writing anything.
+    require_queue_slot(env)?;
     let now = env.ledger().sequence();
     let id = next_job_id(env);
     let job = Job {
@@ -730,9 +770,14 @@ pub fn requeue_dead_letter(
     now: u32,
 ) -> Result<Job, JobError> {
     require_admin(env, caller).map_err(|_| JobError::Unauthorized)?;
+    require_enabled(env)?;
     let mut job = load_job(env, job_id).ok_or(JobError::NotFound)?;
     if job.status != JobStatus::DeadLettered {
         return Err(JobError::NotRetryable);
+    }
+    // Indexed dead letters already reserve a slot. Discarded records do not.
+    if dead_letter_job_ids(env).first_index_of(job_id).is_none() {
+        require_queue_slot(env)?;
     }
     job.status = JobStatus::Pending;
     job.attempts = 0;

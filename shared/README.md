@@ -31,6 +31,7 @@ local `#[contracterror]` enum, and `shared::batch::BatchError`.
 | `Payments` / `Error` | `700-711` | Payment and escrow errors. |
 | `Batch` / `BatchError` | `800-805` | Bounded multi-operation execution. |
 | `Upgradeability` / `UpgradeError` | `900-911` | Upgrade registry, proposal, validation, and migration failures. |
+| `Jobs` / `JobError` | `1-9` | Background worker admission, lifecycle and administrative errors. |
 | `Import` / `ImportError` | `940-948` | Import validation and execution. |
 | `SupportAccess` / `ImpersonationError` | `960-973` | Time-bounded, explicitly scoped support sessions and audit failures. |
 | `Shared` / `Error` | `950-952` | Aid compatibility errors retained in the shared enum. |

@@ -490,3 +490,5 @@ mod test_domain_events;
 // Snapshot restore verification and derived view rebuilding tests.
 #[cfg(test)]
 mod test_snapshot_restore;
+#[cfg(test)]
+mod test_queue_backpressure;

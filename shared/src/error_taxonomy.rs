@@ -23,6 +23,7 @@ pub enum ErrorDomain {
     Import,
     Export,
     SupportAccess,
+    Jobs,
 }
 
 /// Broad class used by clients to choose safe recovery behavior.
@@ -1055,6 +1056,72 @@ fn domain_definition(domain: &ErrorDomain, code: u32) -> Option<Definition> {
             ),
             _ => return None,
         }),
+        ErrorDomain::Jobs => Some(match code {
+            1 => definition(
+                "WORKER_DISABLED",
+                ErrorCategory::Configuration,
+                true,
+                "The background worker is paused.",
+                Some("Wait for an administrator to resume the worker."),
+            ),
+            2 => definition(
+                "WORKER_INVALID_POLICY",
+                ErrorCategory::Configuration,
+                false,
+                "The retry policy is invalid.",
+                Some("Correct the policy before submitting work."),
+            ),
+            3 => definition(
+                "JOB_NOT_FOUND",
+                ErrorCategory::NotFound,
+                false,
+                "The requested job does not exist.",
+                Some("Check the job ID and restore archived state if needed."),
+            ),
+            4 => definition(
+                "JOB_ALREADY_COMPLETED",
+                ErrorCategory::Conflict,
+                false,
+                "The job has already completed.",
+                Some("Use the stored completion receipt."),
+            ),
+            5 => definition(
+                "JOB_NOT_DUE",
+                ErrorCategory::Conflict,
+                true,
+                "The job is not due yet.",
+                Some("Wait until the next attempt ledger."),
+            ),
+            6 => definition(
+                "JOB_NOT_RETRYABLE",
+                ErrorCategory::Conflict,
+                false,
+                "The job cannot be retried in its current state.",
+                Some("Inspect the job and request administrative recovery."),
+            ),
+            7 => definition(
+                "WORKER_UNAUTHORIZED",
+                ErrorCategory::Authorization,
+                false,
+                "You are not authorized to manage the worker.",
+                Some("Use the configured administrator account."),
+            ),
+            8 => definition(
+                "WORKER_QUEUE_FULL",
+                ErrorCategory::Conflict,
+                true,
+                "The background work queue is full.",
+                Some("Drain pending work or discard resolved dead letters before retrying."),
+            ),
+            9 => definition(
+                "WORKER_INVALID_CAPACITY",
+                ErrorCategory::Configuration,
+                false,
+                "The queue capacity is invalid.",
+                Some("Set a capacity between 1 and 256."),
+            ),
+            _ => return None,
+        }),
         ErrorDomain::Import => Some(match code {
             940 => definition(
                 "BATCH_TOO_LARGE",
@@ -1573,6 +1640,7 @@ mod tests {
             (ErrorDomain::Oracle, 500, 511),
             (ErrorDomain::Upgradeability, 900, 915),
             (ErrorDomain::Import, 940, 949),
+            (ErrorDomain::Jobs, 1, 9),
             (ErrorDomain::Export, 920, 934),
             (ErrorDomain::Marketplace, 2000, 2023),
             (ErrorDomain::SupportAccess, 960, 973),
@@ -1632,6 +1700,7 @@ mod tests {
             (ErrorDomain::Upgradeability, 900, 915),
             (ErrorDomain::Export, 920, 934),
             (ErrorDomain::Import, 940, 949),
+            (ErrorDomain::Jobs, 1, 9),
             (ErrorDomain::Marketplace, 2000, 2023),
             (ErrorDomain::SupportAccess, 960, 973),
         ];

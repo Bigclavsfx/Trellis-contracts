@@ -65,6 +65,7 @@ canonical client mapping ranges are:
 | `Payments` | `700-711` | `shared::errors::Error` |
 | `Batch` | `800-805` | `shared::batch::BatchError` |
 | `Upgradeability` | `900-915` | `contracts/upgradeability::UpgradeError` |
+| `Jobs` | `1-9` | `shared::jobs::JobError` |
 | `Import` | `940-949` | `shared::import::ImportError` |
 | `Export` | `920-934` | `shared::export::ExportError` |
 | `SupportAccess` | `960-973` | `shared::impersonation::ImpersonationError` |

@@ -25,6 +25,7 @@ pub mod errors;
 pub mod event_dead_letter;
 pub mod events;
 pub mod evidence;
+pub mod external_evidence;
 pub mod export;
 pub mod feature_flags;
 pub mod health;
@@ -55,6 +56,7 @@ pub mod reconciliation;
 pub mod recovery;
 pub mod release_readiness;
 pub mod replay;
+pub mod resumable_repair;
 pub mod risk_scoring;
 pub mod rollout_guard;
 pub mod retention;
@@ -489,3 +491,9 @@ mod test_domain_events;
 // Snapshot restore verification and derived view rebuilding tests.
 #[cfg(test)]
 mod test_snapshot_restore;
+#[cfg(test)]
+mod test_queue_backpressure;
+#[cfg(test)]
+mod test_concurrent_replay;
+#[cfg(test)]
+mod test_resumable_repair;
